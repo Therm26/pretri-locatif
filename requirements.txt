@@ -1,0 +1,6 @@
+reportlab   # création des PDF fictifs (étape 1)
+faker       # noms, entreprises, numéros fictifs en français (étape 1)
+pytest      # tests automatiques
+anthropic>=2.8     # SDK officiel de l'API Claude (étape 2)
+pydantic           # validation du JSON renvoyé par Claude (étape 2)
+python-dotenv      # lecture de la clé API dans .env (étape 2)

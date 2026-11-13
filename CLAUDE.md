@@ -1,0 +1,77 @@
+# Projet : pré-tri des dossiers locatifs (prototype)
+
+## Objectif
+Aider un gestionnaire locatif à traiter 100+ dossiers pour un même bien. L'outil vérifie que chaque dossier est complet, extrait les chiffres clés des justificatifs, signale les incohérences qui ressemblent à une fraude et applique les critères financiers du bien. La décision finale reste au gestionnaire.
+
+## Règles non négociables
+- Données fictives uniquement. Aucun vrai dossier de locataire dans le repo ni dans les tests.
+- Critères autorisés : revenus, ratio loyer/revenus, type et ancienneté du contrat, présence d'un garant ou d'une garantie (Visale, etc.), complétude des pièces. Rien d'autre.
+- Ne jamais utiliser ni afficher comme critère : âge, sexe, nationalité, nom, adresse d'origine, situation familiale, photo.
+- Les pièces demandées se limitent à la liste du décret n° 2015-1437. L'outil refuse d'ajouter une pièce hors liste.
+- Pas de note globale opaque. Chaque dossier affiche, critère par critère, pourquoi il passe ou non.
+- Chaque action (import, extraction, décision) est écrite dans un journal horodaté.
+
+## Stack
+- Python 3.11+
+- Streamlit pour l'interface
+- API Claude (SDK `anthropic`) pour lire les PDF et images et renvoyer du JSON
+- SQLite pour stocker biens, dossiers, résultats et journal
+- pytest pour les tests
+
+## Structure cible
+```
+app.py                  # interface Streamlit
+src/
+  models.py             # dataclasses : Bien, Dossier, Piece, Resultat
+  extraction.py         # appel Claude : PDF -> JSON structuré
+  controles.py          # contrôles de cohérence (anti-fraude)
+  regles.py             # critères du bien appliqués au dossier
+  journal.py            # écriture du log
+  db.py                 # accès SQLite
+scripts/
+  generer_dossiers.py   # crée de faux dossiers PDF pour les tests
+data/fake/              # dossiers fictifs générés
+tests/
+```
+
+## Étapes (une à la fois, tester avant de passer à la suivante)
+1. `generer_dossiers.py` : 20 faux dossiers (bulletins de salaire, avis d'imposition, contrat de travail, pièce d'identité factice). Dont 4 volontairement faux : net incohérent avec le brut, SIRET invalide, revenus du bulletin différents de l'avis d'imposition, dates impossibles.
+2. `extraction.py` : envoyer un PDF à Claude, récupérer un JSON validé (employeur, SIRET, salaire brut, net, période, type de contrat, revenu fiscal de référence).
+3. `controles.py` : contrôles déterministes en Python (clé de Luhn du SIRET, ratio net/brut entre 0,70 et 0,85, cohérence bulletin vs avis, dates).
+4. `regles.py` : critères saisis par bien (loyer CC, ratio minimum, garant accepté ou non). Statut : Complet / Incomplet / À vérifier, avec motif par critère.
+5. `app.py` : créer un bien, importer un dossier (zip ou PDF), voir la liste triée par statut puis par ratio, ouvrir le détail.
+6. Journal + export CSV de la sélection.
+
+## Conventions
+- Code et noms de variables en français ou anglais, mais cohérents dans un même fichier.
+- Clé API dans `.env` (jamais commitée). `.gitignore` inclut `.env` et `data/`.
+- Expliquer chaque fichier créé en quelques lignes : je débute en code et je veux comprendre.
+- Lancer les commandes avec l'environnement virtuel : `.\.venv\Scripts\python.exe -m pytest`.
+
+## Avancement
+
+### Fait
+- **Mise en place** (11/11/2026) : dossiers `src/`, `scripts/`, `tests/`, `data/fake/` ; `.gitignore`, `requirements.txt`, `README.md`, `.env.example`, `pyproject.toml` ; environnement virtuel `.venv` ; `git init` (aucun commit pour l'instant).
+- **Étape 1** (11/11/2026) : `scripts/generer_dossiers.py` avec reportlab (PDF) et Faker `fr_FR` (données), graine fixe 42.
+  - 20 dossiers dans `data/fake/D01` à `D20`, 6 PDF chacun : pièce d'identité, contrat, 3 bulletins (08 à 10/2026), avis d'imposition 2026 ; un zip par dossier dans `data/fake/zips/`.
+  - Anomalies volontaires : D05 net incohérent, D09 SIRET invalide, D13 avis incohérent avec les bulletins, D17 dates impossibles.
+  - `data/fake/verite.json` : valeurs attendues par dossier, pour tester l'extraction.
+  - Pièce d'identité et avis sans date de naissance, sexe, nationalité, adresse, situation familiale ni photo ; postes neutres (non genrés).
+  - Tests : `tests/test_generer_dossiers.py`, 9 tests qui passent.
+  - Régénérer : `.\.venv\Scripts\python.exe -m scripts.generer_dossiers`.
+
+- **Étape 2, code** (13/11/2026) : `src/extraction.py`, un appel Claude par fichier (PDF ou image), modèle `claude-opus-5-5`, effort `low`, sortie structurée validée par le modèle pydantic `PieceExtraite`, fallback serveur en cas de refus.
+  - Dates recopiées telles qu'imprimées (texte), pour que l'étape 3 détecte « 31/09/2026 ». Aucun nom, adresse ni autre donnée personnelle dans le schéma.
+  - `synthese_dossier()` regroupe les pièces au format de `verite.json`.
+  - `scripts/evaluer_extraction.py` : compare à `verite.json` champ par champ (vraie API) ; résultats bruts dans `data/fake/extraction/`.
+  - Tests : `tests/test_extraction.py`, 8 tests avec un faux client (sans API).
+  - Dépendances ajoutées à `requirements.txt` : `anthropic`, `pydantic`, `python-dotenv`.
+  - Champs du schéma tous obligatoires (null si absent) : avec des champs facultatifs, l'API répondait « Schema is too complex ».
+- **Étape 2, évaluation** (13/11/2026) : 20 dossiers passés dans l'API, réponses dans `data/fake/extraction/`.
+  - `verite.json` contient aussi `bulletins` : par bulletin (08, 09, 10), période (texte tel qu'imprimé), brut, net, net imposable. Produit par `generer_dossiers.py` (PDF inchangés).
+  - `scripts/taux_par_champ.py` : taux par champ sans API, à partir des JSON enregistrés. Résultat : 500/500.
+  - Date impossible : stockée en texte brut (`"31/09/2026"`) dans `PieceExtraite` ; `date_iso()` renvoie `None` pour une date invalide comme pour une date absente.
+  - Tests : 19 qui passent.
+
+### Prochaine étape
+- **Étape 3** : `src/controles.py`. Distinguer « date absente » et « date invalide » (aujourd'hui `date_iso()` renvoie `None` dans les deux cas) : le contrôle des dates doit lire le texte brut.
