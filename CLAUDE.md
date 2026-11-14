@@ -81,5 +81,16 @@ tests/
   - Tests écrits avant le code : `tests/test_controles.py`. Les 4 pièges lèvent leur anomalie, les 16 sains n'en lèvent aucune. Total : 41 tests.
   - Marges sur les dossiers fictifs : sains net/brut 0,76 à 0,80 et avis/bulletins 0,95 à 1,00 ; D05 donne 0,83 sur l'avis (sous le seuil, non signalé).
 
+- **Étape 4** (13/11/2026) : `src/models.py` (`Bien`) et `src/regles.py` (`evaluer_dossier`, `cle_de_tri`).
+  - `Bien` : loyer CC, ratio minimum (défaut 3), garant accepté, pièces exigées, nombre de bulletins (1 à 3). Refuse à la création une pièce hors décret 2015-1437 (`PieceNonAutorisee`) ou un critère absurde (`CritereInvalide`).
+  - Pièces exigibles : identité, contrat, bulletins, avis d'imposition (pièces du décret que l'outil reconnaît).
+  - Critères affichés, dans l'ordre : `completude`, `revenus`, puis les 4 contrôles de l'étape 3. Chacun `respecte` / `non_respecte` / `a_verifier` avec motif.
+  - Revenus = moyenne du net à payer des bulletins ; ratio = revenus / loyer CC.
+  - Garantie (`visale` ou `garant_physique`) déclarée par le gestionnaire : si revenus insuffisants, « à vérifier » si le bien accepte les garants, sinon « non respecté ».
+  - Statut : Incomplet (pièce manquante) > À vérifier (contrôle en anomalie ou garantie à examiner) > Complet. Le ratio insuffisant ne change PAS le statut : c'est un critère à part.
+  - Tri : statut (Complet, À vérifier, Incomplet) puis ratio décroissant.
+  - Tests écrits avant le code : `tests/test_regles.py`. Total : 67 tests.
+
 ### Prochaine étape
-- **Étape 4** : `src/regles.py`, critères saisis par bien (loyer CC, ratio minimum, garant accepté ou non). Statut Complet / Incomplet / À vérifier, avec motif par critère ; une anomalie de l'étape 3 donne « À vérifier ».
+- **Étape 5** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF), voir la liste triée, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
+- Pas encore commité : étapes 3 et 4, et mise à jour de ce fichier.
