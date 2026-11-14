@@ -25,6 +25,8 @@ from faker import Faker
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
+from src.controles import luhn_valide
+
 NB_DOSSIERS = 20
 MOIS_BULLETINS = [(2026, 8), (2026, 9), (2026, 10)]
 ANNEE_REVENUS_AVIS = 2025
@@ -47,17 +49,7 @@ POSTES = ["Comptable", "Technicien support", "Développeur", "Assistant commerci
 # SIRET et clé de Luhn
 # ---------------------------------------------------------------------------
 
-def luhn_valide(nombre: str) -> bool:
-    """Vrai si la suite de chiffres respecte l'algorithme de Luhn (SIREN, SIRET)."""
-    total = 0
-    for i, caractere in enumerate(reversed(nombre)):
-        chiffre = int(caractere)
-        if i % 2 == 1:  # un chiffre sur deux, en partant de la droite, est doublé
-            chiffre *= 2
-            if chiffre > 9:
-                chiffre -= 9
-        total += chiffre
-    return total % 10 == 0
+# luhn_valide vient de src/controles.py : une seule version de l'algorithme.
 
 
 def completer_luhn(prefixe: str) -> str:

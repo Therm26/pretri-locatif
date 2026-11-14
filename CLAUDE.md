@@ -73,5 +73,13 @@ tests/
   - Date impossible : stockée en texte brut (`"31/09/2026"`) dans `PieceExtraite` ; `date_iso()` renvoie `None` pour une date invalide comme pour une date absente.
   - Tests : 19 qui passent.
 
+- **Étape 3** (13/11/2026) : `src/controles.py`, 4 contrôles déterministes, toujours dans cet ordre : `siret`, `net_brut`, `bulletins_vs_avis`, `dates`. Statut `ok` / `anomalie` / `non_verifiable` (donnée manquante, pas une accusation), motif en clair.
+  - SIRET : Luhn sur le SIREN et le SIRET (exception La Poste : somme des chiffres multiple de 5), même SIRET sur toutes les pièces. `luhn_valide` est désormais dans `src/controles.py` (le générateur l'importe).
+  - Net/brut entre 0,70 et 0,85 (bornes incluses) sur chaque bulletin.
+  - Avis : salaires déclarés comparés à 12 fois le net imposable moyen, anomalie si écart > 20 %.
+  - Dates : `lire_date()` renvoie `None` si absente, lève `DateInvalide` si impossible ; embauche après le premier bulletin, période ou contrat à l'envers.
+  - Tests écrits avant le code : `tests/test_controles.py`. Les 4 pièges lèvent leur anomalie, les 16 sains n'en lèvent aucune. Total : 41 tests.
+  - Marges sur les dossiers fictifs : sains net/brut 0,76 à 0,80 et avis/bulletins 0,95 à 1,00 ; D05 donne 0,83 sur l'avis (sous le seuil, non signalé).
+
 ### Prochaine étape
-- **Étape 3** : `src/controles.py`. Distinguer « date absente » et « date invalide » (aujourd'hui `date_iso()` renvoie `None` dans les deux cas) : le contrôle des dates doit lire le texte brut.
+- **Étape 4** : `src/regles.py`, critères saisis par bien (loyer CC, ratio minimum, garant accepté ou non). Statut Complet / Incomplet / À vérifier, avec motif par critère ; une anomalie de l'étape 3 donne « À vérifier ».
