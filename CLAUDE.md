@@ -116,14 +116,24 @@ tests/
   - Décision du gestionnaire : prévue à l'étape 6.
 
 ### À faire à l'étape 6 (décision du gestionnaire), exigences déjà fixées
-- `purger()` ne supprime JAMAIS un dossier retenu.
-- Le délai de 3 mois court à partir de la décision de non-retenue, pas du dépôt. Aujourd'hui (5a), `a_supprimer_le` = dépôt + 3 mois : à changer.
-- Pistes prévues :
-  - `a_supprimer_le` devient NULL tant qu'il n'y a pas de décision « non retenu » ; à cette décision, il vaut date de décision + 3 mois.
-  - Si la décision repasse à « retenu », `a_supprimer_le` revient à NULL.
-  - Double sécurité : `purger()` exclut aussi explicitement les dossiers retenus, même si `a_supprimer_le` est rempli par erreur.
-  - Tests : dossier retenu jamais purgé, même des années après ; non retenu purgé 3 mois après la décision, pas après le dépôt ; retenu puis non retenu, et l'inverse.
-- Question ouverte : que faire d'un dossier sans aucune décision ? Avec ces règles, il serait gardé indéfiniment.
+- Décision par dossier : sans décision / retenu / non retenu, avec sa date ; chaque décision est journalisée (statut seulement, aucune donnée lue).
+- Statut du bien : Ouvert / Loué (date de clôture au passage à Loué).
+- `a_supprimer_le`, règles :
+  - Dossier sans décision : dépôt + 3 mois. C'est le délai de secours, la règle actuelle (5a), qu'on garde.
+  - Décision « non retenu » : décision + 3 mois, sans jamais raccourcir une date déjà fixée (on garde la plus tardive des deux).
+  - Bien qui passe à Loué : tous ses dossiers sans décision deviennent « non retenu », avec la date de clôture comme date de décision, donc purge à clôture + 3 mois (sans raccourcir). Le journal note la bascule automatique (une ligne par dossier, action distincte d'une décision manuelle).
+  - Retenu : jamais purgé. `a_supprimer_le` passe à NULL, et `purger()` exclut aussi explicitement les retenus (double sécurité, même si une date est remplie par erreur).
+  - Retenu puis non retenu : décision + 3 mois.
+- Tests :
+  - sans décision, bien ouvert : purgé juste après dépôt + 3 mois, pas avant ;
+  - non retenu : `a_supprimer_le` = décision + 3 mois, purgé 3 mois après la décision et non après le dépôt ;
+  - non retenu sans raccourcir : une décision dont + 3 mois tomberait avant la date déjà fixée laisse la date inchangée ; deux décisions « non retenu » successives donnent la date la plus tardive ;
+  - bien passé à Loué : les dossiers sans décision deviennent « non retenu » à la date de clôture, `a_supprimer_le` = clôture + 3 mois (ou plus tard si déjà fixé), purgés après cette date seulement ;
+  - bascule à Loué sans effet sur les dossiers déjà retenus ou déjà non retenus (leur décision et leur date restent) ;
+  - journal : une ligne de bascule automatique par dossier, avec référence et statut, sans montant ni donnée lue ;
+  - retenu jamais purgé, même des années après, même avec un `a_supprimer_le` rempli à la main ;
+  - retenu puis non retenu : purge à décision + 3 mois ; non retenu puis retenu : plus jamais purgé ;
+  - le journal survit à toutes ces purges (`dossier_id` NULL, `reference` gardée).
 
 ### Prochaine étape
 - **Étape 5b** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
