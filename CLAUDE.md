@@ -127,26 +127,19 @@ tests/
   - Vérifié dans le navigateur sur une base d'essai : 13/3/1/5 par groupe, Visale sur D01 → groupe a puis retour en d, création de bien, ratio 0 refusé. Import réel via l'API non testé depuis l'interface (logique testée avec un faux extracteur).
   - Tests : `tests/test_depot.py`. Total : 135.
 
-### À faire à l'étape 6 (décision du gestionnaire), exigences déjà fixées
-- Décision par dossier : sans décision / retenu / non retenu, avec sa date ; chaque décision est journalisée (statut seulement, aucune donnée lue).
-- Statut du bien : Ouvert / Loué (date de clôture au passage à Loué).
-- `a_supprimer_le`, règles :
-  - Dossier sans décision : dépôt + 3 mois. C'est le délai de secours, la règle actuelle (5a), qu'on garde.
-  - Décision « non retenu » : décision + 3 mois, sans jamais raccourcir une date déjà fixée (on garde la plus tardive des deux).
-  - Bien qui passe à Loué : tous ses dossiers sans décision deviennent « non retenu », avec la date de clôture comme date de décision, donc purge à clôture + 3 mois (sans raccourcir). Le journal note la bascule automatique (une ligne par dossier, action distincte d'une décision manuelle).
-  - Retenu : jamais purgé. `a_supprimer_le` passe à NULL, et `purger()` exclut aussi explicitement les retenus (double sécurité, même si une date est remplie par erreur).
-  - Retenu puis non retenu : décision + 3 mois.
-- Tests :
-  - sans décision, bien ouvert : purgé juste après dépôt + 3 mois, pas avant ;
-  - non retenu : `a_supprimer_le` = décision + 3 mois, purgé 3 mois après la décision et non après le dépôt ;
-  - non retenu sans raccourcir : une décision dont + 3 mois tomberait avant la date déjà fixée laisse la date inchangée ; deux décisions « non retenu » successives donnent la date la plus tardive ;
-  - bien passé à Loué : les dossiers sans décision deviennent « non retenu » à la date de clôture, `a_supprimer_le` = clôture + 3 mois (ou plus tard si déjà fixé), purgés après cette date seulement ;
-  - bascule à Loué sans effet sur les dossiers déjà retenus ou déjà non retenus (leur décision et leur date restent) ;
-  - journal : une ligne de bascule automatique par dossier, avec référence et statut, sans montant ni donnée lue ;
-  - retenu jamais purgé, même des années après, même avec un `a_supprimer_le` rempli à la main ;
-  - retenu puis non retenu : purge à décision + 3 mois ; non retenu puis retenu : plus jamais purgé ;
-  - le journal survit à toutes ces purges (`dossier_id` NULL, `reference` gardée).
+- **Étape 6** (14/11/2026) : décision du gestionnaire, bien Ouvert / Loué, journal consultable, export CSV.
+  - Schéma : `dossier.decision` (`retenu` / `non_retenu` / NULL = sans décision), `decision_le`, `a_supprimer_le` désormais NULL possible ; `bien.statut` (`Ouvert` / `Loué`), `cloture_le`. CHECK : une décision a toujours sa date.
+  - `db.migrer()` met à jour une base d'avant l'étape 6 à l'ouverture (ajout de colonnes au bien, table `dossier` recréée et recopiée, clés étrangères vérifiées). Essayé sur une copie de `data/pretri.db` : 22 dossiers, 131 pièces, 45 lignes de journal conservés.
+  - Conservation : sans décision = dépôt + 3 mois ; non retenu = décision + 3 mois sans jamais raccourcir (`plus_tardive`) ; retenu = `a_supprimer_le` NULL et `purger()` exclut les retenus même avec une date remplie ; retenu puis non retenu = décision + 3 mois.
+  - `decider(conn, dossier_id, decision, quand=None)` : refuse une décision inconnue ou datée d'avant le dépôt. Journal `decision` (décision, date, date de suppression).
+  - `changer_statut_bien(conn, bien_id, "Loué" | "Ouvert", quand=None)` : Loué bascule les dossiers sans décision en non retenu à la date de clôture (journal `non_retenu_auto`, une ligne par dossier, plus `cloture_bien`) ; les décisions déjà prises ne bougent pas. Rouvrir (`reouverture_bien`) garde les décisions. Un bien loué refuse tout nouveau dossier (`BienLoue`), y compris dans `deposer()` avant toute lecture payante.
+  - Journal : nouvelles clés `decision`, `decision_le`, `statut_bien`, `cloture_le`, `nb_dossiers`. `lister_journal()` pour l'onglet Journal.
+  - `src/export.py` : CSV `;` en UTF-8 avec BOM (Excel). Colonnes : dossier, dépôt, groupe, 3 statuts, décision, date de décision, suppression. Pas de ratio, revenus ni motif, car le fichier sort de l'outil et n'est pas purgé. Chaque export est journalisé (`export_csv`, nombre de dossiers).
+  - Interface : encart « Marquer le bien comme loué » (nombre de dossiers basculés annoncé, case de confirmation), « Rouvrir le bien » ; dans le détail, Retenir / Ne pas retenir (boutons neutres) et date de suppression ; filtres par groupe et par décision, colonne Décision, bouton d'export de la sélection affichée ; onglet Journal avec filtre par action et libellés lisibles.
+  - Vérifié dans le navigateur sur une copie migrée de la base : retenir D07, ne pas retenir D08, filtre + export (2 dossiers), Loué (20 dossiers basculés), import bloqué, journal, réouverture.
+  - Tests : `tests/test_decision.py` (16, dont migration et export). Total : 151.
+  - Pas de retour à « sans décision » : on peut seulement passer de retenu à non retenu et inversement.
 
 ### Prochaine étape
 - Essayer un import réel depuis l'interface (un zip fictif, 6 lectures payantes).
-- **Étape 6** : décision du gestionnaire (exigences ci-dessus), statut du bien Ouvert / Loué, journal consultable et export CSV de la sélection.
+- Les 6 étapes du plan sont faites. Pistes : reconnaître le certificat Visale automatiquement, critère d'ancienneté et type de contrat (autorisé, pas encore appliqué), `journal.py` séparé comme dans la structure cible.

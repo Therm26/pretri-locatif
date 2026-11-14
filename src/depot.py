@@ -134,6 +134,8 @@ def deposer(conn: sqlite3.Connection, bien_id: int, date_depot: datetime,
     if date_depot > datetime.now():
         raise DepotInvalide("la date de dépôt est dans le futur")
     db.charger_bien(conn, bien_id)                 # KeyError si le bien n'existe pas
+    if db.statut_bien(conn, bien_id)[0] == "Loué":  # avant de payer des lectures
+        raise db.BienLoue("ce bien est loué : il ne reçoit plus de dossier")
     garant = garant or None                        # {} -> pas de garant
     extraire = extraire or extraire_piece          # par défaut : le vrai appel à Claude
     reference = prochaine_reference(conn, bien_id)

@@ -1,4 +1,4 @@
-"""Étape 5a : la base SQLite (biens, dossiers, pièces, résultats, journal).
+"""Étapes 5a et 6 : la base SQLite (biens, dossiers, pièces, résultats, journal).
 
 SQLite garde tout dans un seul fichier (`data/pretri.db` par défaut). Ce module est
 le seul à écrire du SQL : le reste du code appelle ses fonctions.
@@ -9,8 +9,14 @@ Règles appliquées ici :
 - Argent en centimes (INTEGER) : 800,00 € est stocké 80000.
 - Dates en ISO 8601 à la seconde, sans fuseau : « 2026-11-02T09:00:00 ». Sous cette
   forme, l'ordre alphabétique est l'ordre chronologique, donc ORDER BY marche.
-- Un dossier est gardé 3 mois après son dépôt (`a_supprimer_le`) ; `purger()` supprime
-  ensuite le dossier, ses pièces et son résultat.
+- Conservation (`a_supprimer_le`), puis `purger()` supprime le dossier, ses pièces et
+  son résultat :
+    sans décision        dépôt + 3 mois (délai de secours)
+    non retenu           décision + 3 mois, sans jamais raccourcir une date déjà fixée
+    bien passé à Loué    ses dossiers sans décision deviennent « non retenu » à la date
+                         de clôture (bascule automatique, journalisée à part)
+    retenu               jamais : a_supprimer_le = NULL, et purger() exclut les retenus
+                         même si une date a été remplie par erreur
 - Le journal ne contient que des références, des statuts et les critères du bien :
   jamais un montant lu sur une pièce, un employeur, un nom de fichier. `journaliser()`
   refuse toute autre clé (liste `CLES_JOURNAL`). Il survit à la purge : `dossier_id`
@@ -36,6 +42,23 @@ DUREE_CONSERVATION_MOIS = 3
 # AAAA-MM-JJTHH:MM:SS, vérifié par la base elle-même (CHECK ... GLOB).
 _ISO = "'[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]'"
 
+# Une candidature déposée pour un bien. Aucun nom : une référence seulement.
+# Gardé à part : la migration recrée la table sous un autre nom ({nom}).
+DOSSIER = f"""
+CREATE TABLE IF NOT EXISTS {{nom}} (
+  id              INTEGER PRIMARY KEY,
+  bien_id         INTEGER NOT NULL REFERENCES bien(id),
+  reference       TEXT NOT NULL,                              -- « D01 »
+  date_depot      TEXT NOT NULL CHECK (date_depot GLOB {_ISO}),
+  a_supprimer_le  TEXT CHECK (a_supprimer_le GLOB {_ISO}),    -- NULL : jamais purgé (retenu)
+  visale          INTEGER NOT NULL DEFAULT 0 CHECK (visale IN (0, 1)),  -- vu par le gestionnaire
+  importe_le      TEXT NOT NULL CHECK (importe_le GLOB {_ISO}),
+  decision        TEXT CHECK (decision IN ('retenu', 'non_retenu')),    -- NULL : sans décision
+  decision_le     TEXT CHECK (decision_le GLOB {_ISO}),
+  CHECK ((decision IS NULL) = (decision_le IS NULL)),         -- une décision a toujours sa date
+  UNIQUE (bien_id, reference)
+);"""
+
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS bien (
   id               INTEGER PRIMARY KEY,
@@ -46,20 +69,12 @@ CREATE TABLE IF NOT EXISTS bien (
   visale_acceptee  INTEGER NOT NULL CHECK (visale_acceptee IN (0, 1)),
   pieces_exigees   TEXT NOT NULL,                             -- liste JSON, vérifiée par Bien()
   nb_bulletins     INTEGER NOT NULL CHECK (nb_bulletins BETWEEN 1 AND 3),
-  cree_le          TEXT NOT NULL CHECK (cree_le GLOB {_ISO})
+  cree_le          TEXT NOT NULL CHECK (cree_le GLOB {_ISO}),
+  statut           TEXT NOT NULL DEFAULT 'Ouvert' CHECK (statut IN ('Ouvert', 'Loué')),
+  cloture_le       TEXT CHECK (cloture_le GLOB {_ISO})       -- passage à Loué
 );
 
--- Une candidature déposée pour un bien. Aucun nom : une référence seulement.
-CREATE TABLE IF NOT EXISTS dossier (
-  id              INTEGER PRIMARY KEY,
-  bien_id         INTEGER NOT NULL REFERENCES bien(id),
-  reference       TEXT NOT NULL,                              -- « D01 »
-  date_depot      TEXT NOT NULL CHECK (date_depot GLOB {_ISO}),
-  a_supprimer_le  TEXT NOT NULL CHECK (a_supprimer_le GLOB {_ISO}),  -- dépôt + 3 mois
-  visale          INTEGER NOT NULL DEFAULT 0 CHECK (visale IN (0, 1)),  -- vu par le gestionnaire
-  importe_le      TEXT NOT NULL CHECK (importe_le GLOB {_ISO}),
-  UNIQUE (bien_id, reference)
-);
+{DOSSIER.format(nom="dossier")}
 
 -- Ce que Claude a lu sur chaque fichier.
 CREATE TABLE IF NOT EXISTS piece (
@@ -116,8 +131,13 @@ CLES_JOURNAL = {
     # statuts
     "pieces", "criteres", "controles", "via", "groupe",
     # dates de gestion et compteurs
-    "date_depot", "a_supprimer_le", "nb_pieces", "nb_pieces_garant",
+    "date_depot", "a_supprimer_le", "nb_pieces", "nb_pieces_garant", "nb_dossiers",
+    # décision du gestionnaire et statut du bien
+    "decision", "decision_le", "statut_bien", "cloture_le",
 }
+
+DECISIONS = {"retenu": "retenu", "non_retenu": "non retenu"}     # valeur en base -> libellé
+STATUTS_BIEN = ("Ouvert", "Loué")
 
 
 class DossierExistant(ValueError):
@@ -128,6 +148,14 @@ class DetailInterdit(ValueError):
     """Tentative d'écrire au journal une donnée qui n'a rien à y faire."""
 
 
+class DecisionInvalide(ValueError):
+    """Décision inconnue, ou datée d'avant le dépôt du dossier."""
+
+
+class BienLoue(ValueError):
+    """Le bien est loué : il ne reçoit plus de dossier."""
+
+
 # --- Connexion et dates ----------------------------------------------------------
 
 def connecter(chemin: Path | str = CHEMIN_PAR_DEFAUT) -> sqlite3.Connection:
@@ -136,9 +164,43 @@ def connecter(chemin: Path | str = CHEMIN_PAR_DEFAUT) -> sqlite3.Connection:
         Path(chemin).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(chemin)
     conn.row_factory = sqlite3.Row           # lignes lisibles par nom de colonne : ligne["nom"]
+    migrer(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     return conn
+
+
+def colonnes(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {ligne["name"] for ligne in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def migrer(conn: sqlite3.Connection) -> None:
+    """Met à jour une base créée avant l'étape 6 (sans décision ni statut du bien).
+
+    SQLite sait ajouter une colonne (bien), mais pas retirer le NOT NULL de
+    `dossier.a_supprimer_le` : on recrée la table et on y recopie les lignes
+    (méthode recommandée par la documentation de SQLite). Les clés étrangères sont
+    coupées le temps de l'opération, puis vérifiées avant de valider.
+    """
+    if "a_supprimer_le" not in colonnes(conn, "dossier") or "decision" in colonnes(conn, "dossier"):
+        return                                  # base neuve, ou déjà à jour
+    anciennes = "id, bien_id, reference, date_depot, a_supprimer_le, visale, importe_le"
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE bien ADD COLUMN statut TEXT NOT NULL DEFAULT 'Ouvert' "
+                     "CHECK (statut IN ('Ouvert', 'Loué'))")
+        conn.execute(f"ALTER TABLE bien ADD COLUMN cloture_le TEXT CHECK (cloture_le GLOB {_ISO})")
+        conn.execute(DOSSIER.format(nom="dossier_nouveau"))
+        conn.execute(f"INSERT INTO dossier_nouveau ({anciennes}) SELECT {anciennes} FROM dossier")
+        conn.execute("DROP TABLE dossier")
+        conn.execute("ALTER TABLE dossier_nouveau RENAME TO dossier")
+        if conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise sqlite3.IntegrityError("migration : clés étrangères incohérentes")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def iso(moment: datetime) -> str:
@@ -217,7 +279,16 @@ def trouver_bien(conn: sqlite3.Connection, nom: str) -> Optional[int]:
 
 def lister_biens(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Tous les biens, le plus récent d'abord."""
-    return conn.execute("SELECT id, nom, loyer_cc, ratio_min FROM bien ORDER BY id DESC").fetchall()
+    return conn.execute("SELECT id, nom, loyer_cc, ratio_min, statut FROM bien "
+                        "ORDER BY id DESC").fetchall()
+
+
+def statut_bien(conn: sqlite3.Connection, bien_id: int) -> tuple[str, Optional[str]]:
+    """(« Ouvert » ou « Loué », date de clôture ou None)."""
+    ligne = conn.execute("SELECT statut, cloture_le FROM bien WHERE id = ?", (bien_id,)).fetchone()
+    if ligne is None:
+        raise KeyError(f"bien {bien_id} introuvable")
+    return ligne["statut"], ligne["cloture_le"]
 
 
 # --- Dossiers et pièces ---------------------------------------------------------------
@@ -227,6 +298,8 @@ def ajouter_dossier(conn: sqlite3.Connection, bien_id: int, reference: str, date
                     garant: Optional[dict[str, PieceExtraite]] = None,
                     visale: bool = False) -> int:
     """Enregistre un dossier et ses pièces déjà extraites. Ne calcule pas le résultat."""
+    if statut_bien(conn, bien_id)[0] == "Loué":
+        raise BienLoue("ce bien est loué : il ne reçoit plus de dossier")
     if conn.execute("SELECT 1 FROM dossier WHERE bien_id = ? AND reference = ?",
                     (bien_id, reference)).fetchone():
         raise DossierExistant(f"dossier {reference} déjà importé pour le bien {bien_id}")
@@ -282,6 +355,83 @@ def modifier_visale(conn: sqlite3.Connection, dossier_id: int, visale: bool) -> 
     return evaluer(conn, dossier_id)
 
 
+# --- Décision du gestionnaire (étape 6) -------------------------------------------------
+
+def plus_tardive(actuelle: Optional[str], nouvelle: str) -> str:
+    """Date de suppression à garder : on ne raccourcit jamais une date déjà fixée.
+    Les dates ISO se comparent comme du texte."""
+    return max(actuelle, nouvelle) if actuelle else nouvelle
+
+
+def _ecrire_decision(conn: sqlite3.Connection, dossier: sqlite3.Row, decision: str,
+                     moment: datetime, action: str) -> Optional[str]:
+    """Écrit la décision et la date de suppression qui en découle ; renvoie cette date.
+    À appeler dans une transaction (« with conn: »)."""
+    if decision not in DECISIONS:
+        raise DecisionInvalide(f"décision inconnue : {decision!r}")
+    if iso(moment) < dossier["date_depot"]:
+        raise DecisionInvalide(f"{dossier['reference']} : décision datée d'avant le dépôt")
+    if decision == "retenu":
+        suppression = None                     # un dossier retenu n'est jamais purgé
+    else:
+        # Si le dossier était retenu (date NULL), on repart de décision + 3 mois.
+        suppression = plus_tardive(dossier["a_supprimer_le"],
+                                   iso(ajouter_mois(moment, DUREE_CONSERVATION_MOIS)))
+    conn.execute("UPDATE dossier SET decision = ?, decision_le = ?, a_supprimer_le = ? "
+                 "WHERE id = ?", (decision, iso(moment), suppression, dossier["id"]))
+    journaliser(conn, action, {"decision": decision, "decision_le": iso(moment),
+                               "a_supprimer_le": suppression},
+                bien_id=dossier["bien_id"], dossier_id=dossier["id"],
+                reference=dossier["reference"])
+    return suppression
+
+
+def decider(conn: sqlite3.Connection, dossier_id: int, decision: str,
+            quand: Optional[datetime] = None) -> Optional[str]:
+    """Le gestionnaire retient ou non un dossier. Renvoie la nouvelle date de suppression
+    (None pour un dossier retenu). Peut être changée ensuite (retenu <-> non retenu)."""
+    dossier = charger_dossier(conn, dossier_id)
+    with conn:
+        return _ecrire_decision(conn, dossier, decision, quand or datetime.now(), "decision")
+
+
+def changer_statut_bien(conn: sqlite3.Connection, bien_id: int, statut: str,
+                        quand: Optional[datetime] = None) -> list[str]:
+    """Passe un bien à « Loué » ou le rouvre. Renvoie les références basculées.
+
+    Loué : chaque dossier sans décision devient « non retenu » à la date de clôture
+    (action « non_retenu_auto » au journal, distincte d'une décision manuelle). Les
+    dossiers déjà retenus ou non retenus ne bougent pas.
+    Ouvert : le bien reçoit de nouveau des dossiers ; les décisions restent.
+    """
+    if statut not in STATUTS_BIEN:
+        raise ValueError(f"statut de bien inconnu : {statut!r}")
+    actuel, _ = statut_bien(conn, bien_id)
+    if statut == actuel:
+        return []
+    moment = quand or datetime.now()
+    basculees = []
+    with conn:
+        if statut == "Ouvert":
+            conn.execute("UPDATE bien SET statut = 'Ouvert', cloture_le = NULL WHERE id = ?",
+                         (bien_id,))
+            journaliser(conn, "reouverture_bien", {"statut_bien": "Ouvert"}, bien_id=bien_id)
+            return []
+        conn.execute("UPDATE bien SET statut = 'Loué', cloture_le = ? WHERE id = ?",
+                     (iso(moment), bien_id))
+        journaliser(conn, "cloture_bien", {"statut_bien": "Loué", "cloture_le": iso(moment)},
+                    bien_id=bien_id)
+        sans_decision = conn.execute(
+            "SELECT * FROM dossier WHERE bien_id = ? AND decision IS NULL ORDER BY reference",
+            (bien_id,)).fetchall()
+        for dossier in sans_decision:
+            # Un dossier déposé après la date de clôture saisie garde sa propre date.
+            date = max(moment, datetime.fromisoformat(dossier["date_depot"]))
+            _ecrire_decision(conn, dossier, "non_retenu", date, "non_retenu_auto")
+            basculees.append(dossier["reference"])
+    return basculees
+
+
 # --- Évaluation -------------------------------------------------------------------------
 
 def evaluer(conn: sqlite3.Connection, dossier_id: int) -> Resultat:
@@ -321,8 +471,8 @@ def liste_triee(conn: sqlite3.Connection, bien_id: int) -> list[sqlite3.Row]:
     Un dossier pas encore évalué arrive en dernier.
     """
     return conn.execute(
-        "SELECT d.id, d.reference, d.date_depot, r.groupe, r.pieces, r.criteres, r.controles, "
-        "r.ratio FROM dossier d LEFT JOIN resultat r ON r.dossier_id = d.id "
+        "SELECT d.id, d.reference, d.date_depot, d.decision, d.decision_le, d.a_supprimer_le, "
+        "r.groupe, r.pieces, r.criteres, r.controles, r.ratio FROM dossier d LEFT JOIN resultat r ON r.dossier_id = d.id "
         "WHERE d.bien_id = ? ORDER BY r.groupe IS NULL, r.groupe, d.date_depot, d.reference",
         (bien_id,)).fetchall()
 
@@ -332,16 +482,28 @@ def liste_triee(conn: sqlite3.Connection, bien_id: int) -> list[sqlite3.Row]:
 def purger(conn: sqlite3.Connection, quand: Optional[datetime] = None) -> list[str]:
     """Supprime les dossiers dont la date `a_supprimer_le` est dépassée.
 
+    Un dossier retenu n'est jamais supprimé, même si sa date a été remplie par erreur
+    (double sécurité : sa date est normalement NULL).
+
     Pièces et résultat partent avec (ON DELETE CASCADE). Le journal garde ses lignes :
     dossier_id devient NULL (ON DELETE SET NULL), la référence reste.
     Renvoie les références supprimées.
     """
     limite = iso(quand or datetime.now())
     perimes = conn.execute(
-        "SELECT id, bien_id, reference FROM dossier WHERE a_supprimer_le < ? ORDER BY reference",
+        "SELECT id, bien_id, reference FROM dossier WHERE a_supprimer_le IS NOT NULL "
+        "AND a_supprimer_le < ? AND decision IS NOT 'retenu' ORDER BY reference",
         (limite,)).fetchall()
     with conn:
         for d in perimes:
             conn.execute("DELETE FROM dossier WHERE id = ?", (d["id"],))
             journaliser(conn, "purge", {}, bien_id=d["bien_id"], reference=d["reference"])
     return [d["reference"] for d in perimes]
+
+
+# --- Journal consultable (étape 6) ---------------------------------------------------------
+
+def lister_journal(conn: sqlite3.Connection, bien_id: int) -> list[sqlite3.Row]:
+    """Lignes du journal d'un bien, la plus récente d'abord."""
+    return conn.execute("SELECT horodatage, action, reference, detail FROM journal "
+                        "WHERE bien_id = ? ORDER BY id DESC", (bien_id,)).fetchall()

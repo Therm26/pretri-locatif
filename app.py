@@ -1,4 +1,4 @@
-"""Étape 5b : l'interface Streamlit du pré-tri.
+"""Étapes 5b et 6 : l'interface Streamlit du pré-tri.
 
 Lancer :
     .\\.venv\\Scripts\\python.exe -m streamlit run app.py
@@ -11,7 +11,8 @@ l'autre est dans la base SQLite (data/pretri.db) ou dans `st.session_state`.
 
 Ce fichier ne contient que l'affichage. La logique est ailleurs :
     src/depot.py     zip ou PDF -> lecture par Claude -> base
-    src/db.py        biens, dossiers, résultats, journal, purge à 3 mois
+    src/db.py        biens, dossiers, résultats, décisions, journal, purge
+    src/export.py    export CSV de la sélection (statuts et dates, aucune donnée lue)
     src/regles.py    les trois statuts et leurs motifs
 """
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import closing
 from datetime import datetime
 
 import pandas as pd
@@ -28,6 +30,7 @@ from dotenv import load_dotenv
 from scripts.importer_dossiers import importer as importer_dossiers_fictifs
 from src import db
 from src.depot import DepotInvalide, deposer, lire_envoi, prochaine_reference
+from src.export import csv_selection
 from src.extraction import ErreurExtraction, TYPES_MIME
 from src.models import PIECES_EXIGIBLES, Bien, CritereInvalide, PieceNonAutorisee
 from src.regles import LIBELLES_CONTROLES, evaluer_dossier
@@ -39,6 +42,14 @@ GROUPES = {
     "d": "d · non conforme",
 }
 STATUT_CONTROLE = {"ok": "OK", "anomalie": "Anomalie", "non_verifiable": "Non vérifiable"}
+SANS_DECISION = "sans décision"
+ACTIONS = {   # libellés du journal
+    "creation_bien": "création du bien", "extraction": "lecture par Claude",
+    "extraction_echec": "lecture impossible", "import": "import", "evaluation": "évaluation",
+    "visale": "Visale", "decision": "décision", "non_retenu_auto": "non retenu (bien loué)",
+    "cloture_bien": "bien loué", "reouverture_bien": "bien rouvert", "purge": "purge",
+    "export_csv": "export CSV",
+}
 FORMATS = [ext.lstrip(".") for ext in TYPES_MIME] + ["zip"]
 
 st.set_page_config(page_title="Pré-tri locatif", layout="wide")
@@ -58,7 +69,8 @@ def euros(centimes: int | None) -> str:
 
 # Une connexion neuve à chaque passage : SQLite est un simple fichier, c'est instantané,
 # et Streamlit change de fil d'exécution d'un clic à l'autre (une connexion n'y survit pas).
-conn = db.connecter(os.getenv("PRETRI_BASE", db.CHEMIN_PAR_DEFAUT))
+CHEMIN_BASE = os.getenv("PRETRI_BASE", db.CHEMIN_PAR_DEFAUT)
+conn = db.connecter(CHEMIN_BASE)
 
 # Purge à chaque passage : un dossier dont la date de conservation est dépassée disparaît.
 purges = db.purger(conn)
@@ -73,7 +85,8 @@ with st.sidebar:
     biens = db.lister_biens(conn)
     bien_id = None
     if biens:
-        noms = {b["id"]: f"{b['nom']} · {euros(b['loyer_cc'])} CC" for b in biens}
+        noms = {b["id"]: f"{b['nom']} · {euros(b['loyer_cc'])} CC"
+                         + (" · loué" if b["statut"] == "Loué" else "") for b in biens}
         choix = st.session_state.get("bien_id")
         bien_id = st.selectbox("Bien affiché", list(noms), format_func=noms.get,
                                index=list(noms).index(choix) if choix in noms else 0)
@@ -111,10 +124,14 @@ with st.sidebar:
     st.caption("Démonstration, sans appel à l'API : le bien « T2 fictif » et les 22 "
                "dossiers fictifs déjà lus par Claude.")
     if st.button("Charger les dossiers fictifs"):
-        nouveaux = importer_dossiers_fictifs(conn)
-        st.session_state["bien_id"] = db.trouver_bien(conn, "T2 fictif")
-        st.toast(f"{len(nouveaux)} dossier(s) fictif(s) importé(s).")
-        st.rerun()
+        try:
+            nouveaux = importer_dossiers_fictifs(conn)
+        except db.BienLoue:
+            st.error("« T2 fictif » est loué : rouvrez-le pour y charger des dossiers.")
+        else:
+            st.session_state["bien_id"] = db.trouver_bien(conn, "T2 fictif")
+            st.toast(f"{len(nouveaux)} dossier(s) fictif(s) importé(s).")
+            st.rerun()
 
 if bien_id is None:
     st.title("Pré-tri des dossiers locatifs")
@@ -122,6 +139,7 @@ if bien_id is None:
     st.stop()
 
 bien = db.charger_bien(conn, bien_id)
+statut, cloture_le = db.statut_bien(conn, bien_id)
 
 
 # --- En-tête : les critères du bien ---------------------------------------------------
@@ -134,7 +152,30 @@ st.caption(
     f"· pièces : {', '.join(PIECES_EXIGIBLES[t][0] for t in bien.pieces_exigees)} "
     f"({bien.nb_bulletins} bulletin(s)). La décision reste au gestionnaire.")
 
-onglet_liste, onglet_import = st.tabs(["Dossiers", "Importer un dossier"])
+
+# --- Statut du bien : Ouvert / Loué ----------------------------------------------------
+
+if statut == "Loué":
+    c1, c2 = st.columns([4, 1])
+    c1.info(f"Bien loué le {date_fr(cloture_le)} : il ne reçoit plus de dossier. Les dossiers "
+            "non retenus sont supprimés 3 mois après leur décision ; les retenus sont gardés.")
+    if c2.button("Rouvrir le bien"):
+        db.changer_statut_bien(conn, bien_id, "Ouvert")
+        st.rerun()
+else:
+    nb_sans_decision = sum(1 for l in db.liste_triee(conn, bien_id) if l["decision"] is None)
+    with st.expander("Marquer le bien comme loué"):
+        st.write(f"Les **{nb_sans_decision}** dossier(s) sans décision passeront en « non "
+                 "retenu » à la date d'aujourd'hui et seront supprimés dans 3 mois. Les dossiers "
+                 "déjà retenus ou non retenus ne changent pas. Le bien ne recevra plus de dossier.")
+        confirme = st.checkbox("Je confirme", key=f"confirme_loue_{bien_id}")
+        if st.button("Marquer comme loué", disabled=not confirme):
+            basculees = db.changer_statut_bien(conn, bien_id, "Loué")
+            st.toast(f"Bien loué ; {len(basculees)} dossier(s) passé(s) en non retenu.")
+            st.rerun()
+
+onglet_liste, onglet_import, onglet_journal = st.tabs(
+    ["Dossiers", "Importer un dossier", "Journal"])
 
 
 # --- Onglet 1 : la liste triée et le détail ---------------------------------------------
@@ -143,8 +184,25 @@ def afficher_detail(dossier_id: int) -> None:
     d = db.charger_dossier(conn, dossier_id)
     pieces, garant = db.charger_pieces(conn, dossier_id)
     st.subheader(f"Dossier {d['reference']}")
+    suppression = ("jamais (dossier retenu)" if d["decision"] == "retenu"
+                   else f"après le {date_fr(d['a_supprimer_le'])}")
     st.caption(f"Déposé le {date_fr(d['date_depot'])} · importé le {date_fr(d['importe_le'])} "
-               f"· supprimé automatiquement après le {date_fr(d['a_supprimer_le'])}")
+               f"· suppression automatique : {suppression}")
+
+    # Décision du gestionnaire : elle peut être changée (retenu <-> non retenu).
+    actuelle = d["decision"]
+    texte = (f"**{db.DECISIONS[actuelle]}** le {date_fr(d['decision_le'])}" if actuelle
+             else f"**{SANS_DECISION}**")
+    c1, c2, c3 = st.columns([3, 1, 1])
+    c1.markdown(f"Décision : {texte}")
+    if c2.button("Retenir", key=f"retenir_{dossier_id}", disabled=actuelle == "retenu",
+                 width="stretch"):
+        db.decider(conn, dossier_id, "retenu")
+        st.rerun()
+    if c3.button("Ne pas retenir", key=f"ecarter_{dossier_id}",
+                 disabled=actuelle == "non_retenu", width="stretch"):
+        db.decider(conn, dossier_id, "non_retenu")
+        st.rerun()
     if d["groupe"] is None:
         st.warning("Ce dossier n'a pas encore été évalué.")
         return
@@ -196,6 +254,21 @@ with onglet_liste:
     else:
         par_groupe = pd.Series([l["groupe"] for l in lignes]).value_counts()
         st.write(" · ".join(f"**{par_groupe.get(g, 0)}** en {GROUPES[g]}" for g in GROUPES))
+
+        def decision_de(l) -> str:
+            return db.DECISIONS.get(l["decision"], SANS_DECISION)
+
+        choix_decisions = [SANS_DECISION, *db.DECISIONS.values()]
+        f1, f2 = st.columns(2)
+        groupes_vus = f1.multiselect("Groupes affichés", list(GROUPES), default=list(GROUPES),
+                                     key=f"filtre_groupes_{bien_id}")
+        decisions_vues = f2.multiselect("Décisions affichées", choix_decisions,
+                                        default=choix_decisions, key=f"filtre_decisions_{bien_id}")
+        lignes = [l for l in lignes if (l["groupe"] in groupes_vus or l["groupe"] is None)
+                  and decision_de(l) in decisions_vues]
+        if not lignes:
+            st.info("Aucun dossier ne correspond aux filtres.")
+    if lignes:
         tableau = pd.DataFrame([{
             "Groupe": l["groupe"] or "non évalué",
             "Dossier": l["reference"],
@@ -204,6 +277,7 @@ with onglet_liste:
             "Critères": l["criteres"],
             "Contrôles": l["controles"],
             "Ratio": f"{l['ratio']:.2f}".replace(".", ",") if l["ratio"] is not None else "—",
+            "Décision": decision_de(l),
         } for l in lignes])
         st.caption("Trié par groupe, puis du dépôt le plus ancien au plus récent. "
                    "Cliquez sur une ligne pour ouvrir le dossier.")
@@ -222,6 +296,18 @@ with onglet_liste:
         elif st.session_state.get("cle_liste") == cle:
             st.session_state["ouvert"] = None          # ligne décochée par le gestionnaire
         st.session_state["cle_liste"] = cle
+
+        def journaliser_export(nb: int) -> None:
+            # Appelé par Streamlit au clic, avant de relancer la page : connexion à part.
+            with closing(db.connecter(CHEMIN_BASE)) as c, c:
+                db.journaliser(c, "export_csv", {"nb_dossiers": nb}, bien_id=bien_id)
+
+        st.download_button(
+            f"Exporter ces {len(lignes)} dossier(s) en CSV", csv_selection(lignes),
+            file_name=f"preselection_{datetime.now():%Y%m%d_%H%M}.csv", mime="text/csv",
+            on_click=journaliser_export, args=(len(lignes),),
+            help="Référence, dates, statuts et décision. Aucun montant, ratio ni motif : "
+                 "le fichier sort de l'outil et n'est pas purgé à 3 mois.")
         if st.session_state.get("ouvert") in ids:
             st.divider()
             afficher_detail(st.session_state["ouvert"])
@@ -229,7 +315,7 @@ with onglet_liste:
 
 # --- Onglet 2 : importer un dossier ----------------------------------------------------
 
-with onglet_import:
+def onglet_importer() -> None:
     # Les champs sont propres à chaque bien (un fichier choisi ne suit pas un changement
     # de bien) ; changer ce numéro les vide après un import réussi.
     n = st.session_state.setdefault("envoi_n", 0)
@@ -274,10 +360,67 @@ with onglet_import:
             dossier_id, ref, resultat = deposer(
                 conn, bien_id, datetime.combine(jour, heure), candidat, garant or None, visale,
                 progression=lambda i, t, nom: barre.progress(i / t, text=f"Lecture de {nom} ({i}/{t})"))
-        except (DepotInvalide, ErreurExtraction) as e:
+        except (DepotInvalide, ErreurExtraction, db.BienLoue) as e:
             barre.empty()
             st.error(f"Rien n'a été enregistré : {e}")
         else:
             st.session_state["envoi_n"] = n + 1
             st.toast(f"{ref} importé : {resultat.pieces}, {resultat.criteres}, {resultat.controles}.")
             st.rerun()
+
+
+with onglet_import:
+    if statut == "Loué":
+        st.info("Ce bien est loué : il ne reçoit plus de dossier. Rouvrez-le pour en importer.")
+    else:
+        onglet_importer()
+
+
+# --- Onglet 3 : le journal ------------------------------------------------------------------
+
+CLES_LISIBLES = {
+    "a_supprimer_le": "à supprimer le", "decision": "décision", "decision_le": "décidé le",
+    "statut_bien": "statut du bien", "cloture_le": "loué le", "nb_dossiers": "dossiers",
+    "date_depot": "dépôt", "nb_pieces": "pièces", "nb_pieces_garant": "pièces du garant",
+    "visale_fournie": "Visale vue", "garant_fourni": "garant fourni",
+    "garant_accepte": "garant accepté", "visale_acceptee": "Visale acceptée",
+    "loyer_cc_centimes": "loyer CC", "ratio_min": "ratio minimum", "nom_bien": "bien",
+    "pieces_exigees": "pièces exigées", "nb_bulletins": "bulletins", "criteres": "critères",
+    "controles": "contrôles", "pieces": "pièces du dossier",
+}
+
+
+def lisible(detail_json: str) -> str:
+    """{"decision": "non_retenu", "a_supprimer_le": "2027-..."} -> texte court."""
+    morceaux = []
+    for cle, valeur in json.loads(detail_json).items():
+        if valeur is None:
+            valeur = "jamais" if cle == "a_supprimer_le" else "—"
+        elif isinstance(valeur, bool):
+            valeur = "oui" if valeur else "non"
+        elif isinstance(valeur, str) and len(valeur) == 19 and valeur[10:11] == "T":
+            valeur = date_fr(valeur)
+        elif cle == "decision":
+            valeur = db.DECISIONS.get(valeur, valeur)
+        elif cle == "loyer_cc_centimes":
+            valeur = euros(valeur)
+        elif isinstance(valeur, list):
+            valeur = ", ".join(PIECES_EXIGIBLES.get(v, (v,))[0] for v in valeur)
+        morceaux.append(f"{CLES_LISIBLES.get(cle, cle.replace('_', ' '))} : {valeur}")
+    return " · ".join(morceaux)
+
+
+with onglet_journal:
+    st.caption("Chaque action, horodatée. Le journal ne contient que des références, des "
+               "statuts et des dates : il est gardé après la purge des dossiers.")
+    journal = db.lister_journal(conn, bien_id)
+    actions_vues = st.multiselect("Actions", sorted({ACTIONS.get(l["action"], l["action"])
+                                                     for l in journal}),
+                                  key=f"filtre_journal_{bien_id}", placeholder="toutes")
+    lignes_journal = [{"Quand": date_fr(l["horodatage"]),
+                       "Action": ACTIONS.get(l["action"], l["action"]),
+                       "Dossier": l["reference"] or "", "Détail": lisible(l["detail"])}
+                      for l in journal]
+    if actions_vues:
+        lignes_journal = [l for l in lignes_journal if l["Action"] in actions_vues]
+    st.dataframe(pd.DataFrame(lignes_journal), hide_index=True, width="stretch", height=600)
