@@ -308,6 +308,7 @@ with onglet_liste:
             on_click=journaliser_export, args=(len(lignes),),
             help="Référence, dates, statuts et décision. Aucun montant, ratio ni motif : "
                  "le fichier sort de l'outil et n'est pas purgé à 3 mois.")
+        st.caption("Ce fichier n’est pas supprimé automatiquement.")
         if st.session_state.get("ouvert") in ids:
             st.divider()
             afficher_detail(st.session_state["ouvert"])

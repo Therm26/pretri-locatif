@@ -139,7 +139,8 @@ tests/
   - Vérifié dans le navigateur sur une copie migrée de la base : retenir D07, ne pas retenir D08, filtre + export (2 dossiers), Loué (20 dossiers basculés), import bloqué, journal, réouverture.
   - Tests : `tests/test_decision.py` (16, dont migration et export). Total : 151.
   - Pas de retour à « sans décision » : on peut seulement passer de retenu à non retenu et inversement.
+  - Sous le bouton d'export : « Ce fichier n’est pas supprimé automatiquement. »
+- **Import réel par l'API depuis l'interface** (14/11/2026) : sur une base d'essai (scratchpad), `D05.zip` importé dans « T2 fictif » sous la référence D23. 6 lectures en 28 s, avec la barre de progression ; valeurs lues identiques champ par champ à `data/fake/extraction/D05.json` ; D23 en groupe (b) comme D05 (Complet, Conforme 3,51, À vérifier : net/brut 0,95 sur les 3 bulletins). Journal : `extraction`, `import`, `evaluation`.
 
 ### Prochaine étape
-- Essayer un import réel depuis l'interface (un zip fictif, 6 lectures payantes).
 - Les 6 étapes du plan sont faites. Pistes : reconnaître le certificat Visale automatiquement, critère d'ancienneté et type de contrat (autorisé, pas encore appliqué), `journal.py` séparé comme dans la structure cible.
