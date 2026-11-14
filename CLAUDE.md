@@ -82,15 +82,17 @@ tests/
   - Marges sur les dossiers fictifs : sains net/brut 0,76 à 0,80 et avis/bulletins 0,95 à 1,00 ; D05 donne 0,83 sur l'avis (sous le seuil, non signalé).
 
 - **Étape 4** (13/11/2026) : `src/models.py` (`Bien`) et `src/regles.py` (`evaluer_dossier`, `cle_de_tri`).
-  - `Bien` : loyer CC, ratio minimum (défaut 3), garant accepté, pièces exigées, nombre de bulletins (1 à 3). Refuse à la création une pièce hors décret 2015-1437 (`PieceNonAutorisee`) ou un critère absurde (`CritereInvalide`).
+  - `Bien` : loyer CC, ratio minimum (défaut 3), `garant_accepte`, `visale_acceptee`, pièces exigées, nombre de bulletins (1 à 3). Refuse à la création une pièce hors décret 2015-1437 (`PieceNonAutorisee`) ou un critère absurde (`CritereInvalide`).
   - Pièces exigibles : identité, contrat, bulletins, avis d'imposition (pièces du décret que l'outil reconnaît).
-  - Critères affichés, dans l'ordre : `completude`, `revenus`, puis les 4 contrôles de l'étape 3. Chacun `respecte` / `non_respecte` / `a_verifier` avec motif.
-  - Revenus = moyenne du net à payer des bulletins ; ratio = revenus / loyer CC.
-  - Garantie (`visale` ou `garant_physique`) déclarée par le gestionnaire : si revenus insuffisants, « à vérifier » si le bien accepte les garants, sinon « non respecté ».
-  - Statut : Incomplet (pièce manquante) > À vérifier (contrôle en anomalie ou garantie à examiner) > Complet. Le ratio insuffisant ne change PAS le statut : c'est un critère à part.
-  - Tri : statut (Complet, À vérifier, Incomplet) puis ratio décroissant.
-  - Tests écrits avant le code : `tests/test_regles.py`. Total : 67 tests.
+  - `evaluer_dossier(pieces, bien, garant=None, visale=False)` : `garant` = pièces extraites du garant ; `visale` = case cochée par le gestionnaire après avoir vu le certificat (reconnaissance automatique plus tard).
+  - Trois statuts indépendants (révisé le 14/11/2026) :
+    - `pieces` : Complet / Incomplet + liste des manquantes.
+    - `criteres` : Conforme / Non conforme / Non évaluable + motif chiffré. Revenus = moyenne du net à payer des bulletins, ratio = revenus / loyer CC. Sous le ratio : Conforme « via garant » si garant accepté et au ratio, sinon « via Visale » si fournie et acceptée, sinon Non conforme. Revenus illisibles (candidat, ou garant quand il est le dernier recours) : Non évaluable, car c'est l'extraction qui a échoué.
+    - `controles` : OK / À vérifier + alertes (contrôles de l'étape 3 non OK, ceux du garant préfixés « garant : », « revenus illisibles, vérifier les bulletins à la main »).
+  - Aucun libellé ne dit « Refusé » (test dédié).
+  - Tri (`groupe`, `cle_de_tri`) : (a) Complet + Conforme + OK, (b) Complet + Conforme + À vérifier, (c) Incomplet ou Non évaluable, (d) Non conforme ; dans chaque groupe, date de dépôt la plus ancienne d'abord.
+  - Sur les 20 dossiers fictifs (loyer 800 €) : 13 en (a), D05 et D17 en (b), D01, D09, D13, D19, D20 en (d).
+  - Tests : `tests/test_regles.py`. Total : 77 tests.
 
 ### Prochaine étape
-- **Étape 5** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF), voir la liste triée, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
-- Pas encore commité : étapes 3 et 4, et mise à jour de ce fichier.
+- **Étape 5** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.

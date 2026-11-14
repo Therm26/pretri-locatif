@@ -1,23 +1,28 @@
-"""Tests de src/regles.py et src/models.py (étape 4), écrits AVANT le code.
+"""Tests de src/regles.py et src/models.py (étape 4).
+
+Trois statuts indépendants par dossier :
+    pieces     Complet / Incomplet
+    criteres   Conforme / Non conforme / Non évaluable (+ motif chiffré)
+    controles  OK / À vérifier (+ liste des alertes)
 
 1. Le bien : critères saisis par le gestionnaire, pièces limitées au décret 2015-1437.
 2. Les dossiers fictifs réels (réponses de Claude enregistrées, sans API).
-3. Cas inventés : complétude, ratio de revenus, garantie, ordre de tri.
+3. Cas inventés : complétude, ratio, garant, Visale, revenus illisibles, tri.
 """
 
 import json
 from dataclasses import fields
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from src.extraction import PieceExtraite
 from src.models import Bien, CritereInvalide, PieceNonAutorisee
-from src.regles import cle_de_tri, evaluer_dossier
+from src.regles import ALERTE_REVENUS_ILLISIBLES, cle_de_tri, evaluer_dossier, groupe
 
 EXTRACTION = Path("data/fake/extraction")
 VERITE = Path("data/fake/verite.json")
-PIEGES = {"D05", "D09", "D13", "D17"}
 
 pas_de_donnees = pytest.mark.skipif(
     not EXTRACTION.exists() or not VERITE.exists(),
@@ -35,10 +40,12 @@ def piece(**champs) -> PieceExtraite:
     return PieceExtraite(**{**vides, **champs})
 
 
-def dossier(net: float = 2400.0, nb_bulletins: int = 3, avec_avis: bool = True):
-    """Petit dossier cohérent, net mensuel `net` (brut = net / 0,78)."""
-    brut = round(net / 0.78, 2)
-    commun = dict(employeur="ACME", siret="73282932000074", type_contrat="CDI",
+def dossier(net: float | None = 2400.0, nb_bulletins: int = 3, avec_avis: bool = True,
+            siret: str = "73282932000074"):
+    """Petit dossier cohérent, net mensuel `net` (brut = net / 0,78). net=None : illisible."""
+    brut = round((net or 2400.0) / 0.78, 2)
+    imposable = round((net or 2400.0) + brut * 0.029, 2)
+    commun = dict(employeur="ACME", siret=siret, type_contrat="CDI",
                   date_debut_contrat="01/01/2020")
     pieces = {
         "piece_identite.pdf": piece(type_piece="piece_identite", validite_identite="01/01/2032"),
@@ -48,28 +55,31 @@ def dossier(net: float = 2400.0, nb_bulletins: int = 3, avec_avis: bool = True):
         pieces[f"bulletin_2026_{mois:02d}.pdf"] = piece(
             type_piece="bulletin_salaire", **commun,
             periode_debut=f"01/{mois:02d}/2026", periode_fin=f"28/{mois:02d}/2026",
-            salaire_brut=brut, salaire_net=net, net_imposable=round(net + brut * 0.029, 2))
+            salaire_brut=brut, salaire_net=net, net_imposable=imposable)
     if avec_avis:
-        annuel = round((net + brut * 0.029) * 12)
+        annuel = round(imposable * 12)
         pieces["avis_imposition_2026.pdf"] = piece(
             type_piece="avis_imposition", annee_revenus=2025,
             salaires_declares=annuel, revenu_fiscal_reference=round(annuel * 0.9))
     return pieces
 
 
-def critere(resultat, nom):
-    return next(c for c in resultat.criteres if c.nom == nom)
+BIEN = Bien(nom="T2 test", loyer_cc=800.0, ratio_min=3.0)
+SANS_GARANT = Bien(nom="T2", loyer_cc=800.0, garant_accepte=False)
+SANS_VISALE = Bien(nom="T2", loyer_cc=800.0, visale_acceptee=False)
 
 
-BIEN = Bien(nom="T2 test", loyer_cc=800.0, ratio_min=3.0, garant_accepte=True)
+def statuts(r):
+    return r.pieces, r.criteres, r.controles
 
 
 # --- 1. Le bien -------------------------------------------------------------------
 
-def test_bien_par_defaut_exige_les_pieces_du_decret():
+def test_bien_par_defaut():
     assert set(BIEN.pieces_exigees) == {
         "piece_identite", "contrat_travail", "bulletin_salaire", "avis_imposition"}
     assert BIEN.nb_bulletins == 3
+    assert BIEN.garant_accepte and BIEN.visale_acceptee
 
 
 @pytest.mark.parametrize("interdite", ["releve_bancaire", "photo", "casier_judiciaire", "autre"])
@@ -96,105 +106,197 @@ def test_bien_sans_critere_interdit():
     assert not interdits & {f.name for f in fields(Bien)}
 
 
-# --- 2. Les vrais dossiers fictifs -------------------------------------------------
+# --- 2. Les vrais dossiers fictifs (loyer 800 €, ratio 3) ---------------------------
 
 @pas_de_donnees
-def test_statuts_des_vingt_dossiers():
+def test_les_vingt_dossiers():
+    non_conformes = {"D01", "D09", "D13", "D19", "D20"}   # ratio < 3
+    a_verifier = {"D05", "D09", "D13", "D17"}             # dossiers piégés
     for v in json.loads(VERITE.read_text("utf-8")):
         r = evaluer_dossier(charger(v["id"]), BIEN)
-        attendu = "À vérifier" if v["id"] in PIEGES else "Complet"
-        assert r.statut == attendu, (v["id"], [(c.nom, c.statut, c.motif) for c in r.criteres])
+        attendu = ("Complet",
+                   "Non conforme" if v["id"] in non_conformes else "Conforme",
+                   "À vérifier" if v["id"] in a_verifier else "OK")
+        assert statuts(r) == attendu, (v["id"], r.criteres_motif, r.alertes)
 
 
 @pas_de_donnees
-def test_ratio_calcule_sur_le_net_des_bulletins():
+def test_motif_chiffre_sur_un_vrai_dossier():
     r = evaluer_dossier(charger("D01"), BIEN)          # net 2 166,54 € par mois
     assert r.revenus_mensuels == pytest.approx(2166.54)
     assert r.ratio == pytest.approx(2166.54 / 800, abs=0.001)
-    assert critere(r, "revenus").statut == "non_respecte"   # 2,71 < 3
+    for morceau in ("2 166,54 €", "2,71", "800,00 €", "3,00"):
+        assert morceau in r.criteres_motif
 
 
 @pas_de_donnees
-def test_anomalie_de_controle_reprise_dans_les_criteres():
+def test_alertes_reprennent_les_controles():
     r = evaluer_dossier(charger("D09"), BIEN)
-    c = critere(r, "siret")
-    assert c.statut == "a_verifier" and "82620450500068" in c.motif
+    assert len(r.alertes) == 1 and "SIRET" in r.alertes[0] and "82620450500068" in r.alertes[0]
 
 
-# --- 3. Cas inventés ----------------------------------------------------------------
+@pas_de_donnees
+def test_aucun_libelle_refuse():
+    """Ni statut ni motif ni alerte ne dit « Refusé »."""
+    jeux = [(charger(f"D{i:02d}"), b, g, v) for i in range(1, 21)
+            for b in (BIEN, SANS_GARANT, SANS_VISALE)
+            for g, v in ((None, False), (dossier(net=1000.0), True))]
+    jeux.append((dossier(net=None, avec_avis=False), BIEN, dossier(net=None), False))
+    for pieces, bien, garant, visale in jeux:
+        r = evaluer_dossier(pieces, bien, garant=garant, visale=visale)
+        textes = [r.pieces, r.pieces_motif, r.criteres, r.criteres_motif, r.controles, *r.alertes]
+        assert not any("refus" in t.lower() for t in textes), textes
 
-def test_tous_les_criteres_affiches_avec_un_motif():
+
+# --- 3. Cas inventés ------------------------------------------------------------------
+
+def test_dossier_parfait():
     r = evaluer_dossier(dossier(), BIEN)
-    assert [c.nom for c in r.criteres] == [
-        "completude", "revenus", "siret", "net_brut", "bulletins_vs_avis", "dates"]
-    assert all(c.motif for c in r.criteres)
-    assert r.statut == "Complet"
+    assert statuts(r) == ("Complet", "Conforme", "OK")
+    assert r.alertes == [] and r.via is None
+    assert "3,00" in r.criteres_motif
 
 
-def test_piece_manquante_incomplet():
+@pytest.mark.parametrize("net, attendu", [(2400.0, "Conforme"), (2399.0, "Non conforme")])
+def test_ratio_limite(net, attendu):
+    assert evaluer_dossier(dossier(net=net), BIEN).criteres == attendu
+
+
+def test_non_conforme_motif_chiffre():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN)
+    assert r.criteres == "Non conforme"
+    assert "2 000,00 €" in r.criteres_motif and "2,50" in r.criteres_motif
+    assert "ni garant ni Visale" in r.criteres_motif
+
+
+def test_piece_manquante_independante_des_criteres():
     r = evaluer_dossier(dossier(avec_avis=False), BIEN)
-    assert r.statut == "Incomplet"
-    c = critere(r, "completude")
-    assert c.statut == "non_respecte" and "avis d'imposition" in c.motif
+    assert r.pieces == "Incomplet" and "avis d'imposition" in r.pieces_motif
+    assert r.criteres == "Conforme"
+    # Sans avis, le contrôle bulletins/avis ne peut pas se faire : alerte.
+    assert r.controles == "À vérifier"
 
 
-def test_bulletins_insuffisants_incomplet():
+def test_bulletins_insuffisants():
     r = evaluer_dossier(dossier(nb_bulletins=2), BIEN)
-    assert r.statut == "Incomplet"
-    assert "2 bulletin(s) sur 3" in critere(r, "completude").motif
+    assert r.pieces == "Incomplet"
+    assert "2 bulletin(s) sur 3" in r.pieces_motif
+    assert r.pieces_manquantes == ["bulletins de salaire : 2 bulletin(s) sur 3"]
 
 
 def test_bien_moins_exigeant():
     bien = Bien(nom="Studio", loyer_cc=500, nb_bulletins=1,
                 pieces_exigees=("piece_identite", "bulletin_salaire"))
-    r = evaluer_dossier(dossier(nb_bulletins=1, avec_avis=False), bien)
-    assert critere(r, "completude").statut == "respecte"
+    assert evaluer_dossier(dossier(nb_bulletins=1, avec_avis=False), bien).pieces == "Complet"
 
 
-def test_incomplet_prime_sur_a_verifier():
-    d = dossier(avec_avis=False)
-    d["contrat_travail.pdf"] = d["contrat_travail.pdf"].model_copy(update={"siret": "123"})
-    assert evaluer_dossier(d, BIEN).statut == "Incomplet"
+def test_trois_statuts_independants():
+    d = dossier(net=2000.0, avec_avis=False, siret="123")
+    r = evaluer_dossier(d, BIEN, visale=True)
+    assert statuts(r) == ("Incomplet", "Conforme", "À vérifier")
 
 
-@pytest.mark.parametrize("net, attendu", [(2400.0, "respecte"), (2399.0, "non_respecte")])
-def test_ratio_limite(net, attendu):
-    assert critere(evaluer_dossier(dossier(net=net), BIEN), "revenus").statut == attendu
+# Garant
+
+def test_conforme_via_garant():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=3000.0))
+    assert r.criteres == "Conforme" and r.via == "garant"
+    assert "via garant" in r.criteres_motif and "3 000,00 €" in r.criteres_motif
+    assert r.controles == "OK"
 
 
-def test_revenus_insuffisants_garantie_acceptee():
-    r = evaluer_dossier(dossier(net=2000.0), BIEN, garantie="visale")
-    c = critere(r, "revenus")
-    assert c.statut == "a_verifier" and "Visale" in c.motif
-    assert r.statut == "À vérifier"
+def test_garant_sous_le_ratio():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=2100.0))
+    assert r.criteres == "Non conforme" and r.via is None
+    assert "garant" in r.criteres_motif and "2,62" in r.criteres_motif
 
 
-def test_revenus_insuffisants_garant_refuse_par_le_bien():
-    bien = Bien(nom="T2", loyer_cc=800, garant_accepte=False)
-    c = critere(evaluer_dossier(dossier(net=2000.0), bien, garantie="garant_physique"), "revenus")
-    assert c.statut == "non_respecte" and "pas accepté" in c.motif
+def test_garant_non_accepte_par_le_bien():
+    r = evaluer_dossier(dossier(net=2000.0), SANS_GARANT, garant=dossier(net=5000.0))
+    assert r.criteres == "Non conforme"
+    assert "garant fourni mais non accepté pour ce bien" in r.criteres_motif
 
 
-def test_garantie_inconnue_refusee():
-    with pytest.raises(CritereInvalide):
-        evaluer_dossier(dossier(), BIEN, garantie="caution_de_tonton")
+def test_alertes_du_garant_prefixees():
+    r = evaluer_dossier(dossier(), BIEN, garant=dossier(net=3000.0, siret="123"))
+    assert r.controles == "À vérifier"
+    assert any(a.startswith("garant : SIRET") for a in r.alertes)
 
 
-def test_revenus_suffisants_garantie_sans_effet():
-    assert critere(evaluer_dossier(dossier(), BIEN, garantie="visale"), "revenus").statut == "respecte"
+def test_candidat_suffisant_garant_sans_effet():
+    r = evaluer_dossier(dossier(), BIEN, garant=dossier(net=5000.0))
+    assert r.criteres == "Conforme" and r.via is None
 
 
-def test_revenus_complet_mais_insuffisants_reste_complet():
-    """Le statut dit si le dossier est fiable ; le ratio est un critère à part."""
-    r = evaluer_dossier(dossier(net=1500.0), BIEN)
-    assert r.statut == "Complet"
-    assert critere(r, "revenus").statut == "non_respecte"
+# Visale
+
+def test_conforme_via_visale():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, visale=True)
+    assert r.criteres == "Conforme" and r.via == "Visale"
+    assert "via Visale" in r.criteres_motif
 
 
-def test_tri_par_statut_puis_ratio():
-    complet_haut = evaluer_dossier(dossier(net=3000.0), BIEN)
-    complet_bas = evaluer_dossier(dossier(net=2500.0), BIEN)
-    a_verifier = evaluer_dossier(dossier(net=2000.0), BIEN, garantie="visale")
-    incomplet = evaluer_dossier(dossier(net=5000.0, avec_avis=False), BIEN)
-    ordre = sorted([incomplet, a_verifier, complet_bas, complet_haut], key=cle_de_tri)
-    assert ordre == [complet_haut, complet_bas, a_verifier, incomplet]
+def test_visale_non_acceptee():
+    r = evaluer_dossier(dossier(net=2000.0), SANS_VISALE, visale=True)
+    assert r.criteres == "Non conforme"
+    assert "Visale fournie mais non acceptée pour ce bien" in r.criteres_motif
+
+
+def test_garant_et_visale_le_garant_prime():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=3000.0), visale=True)
+    assert r.via == "garant"
+
+
+def test_garant_insuffisant_mais_visale():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=2100.0), visale=True)
+    assert r.criteres == "Conforme" and r.via == "Visale"
+
+
+# Revenus illisibles : l'extraction a échoué, cela ne prouve rien contre le candidat.
+
+def test_revenus_illisibles_non_evaluable():
+    r = evaluer_dossier(dossier(net=None), BIEN)
+    assert r.criteres == "Non évaluable"
+    assert r.criteres_motif == "revenus illisibles, ratio impossible à calculer"
+    assert r.ratio is None and r.revenus_mensuels is None
+    assert r.controles == "À vérifier"
+    assert ALERTE_REVENUS_ILLISIBLES == "revenus illisibles, vérifier les bulletins à la main"
+    assert ALERTE_REVENUS_ILLISIBLES in r.alertes
+
+
+def test_revenus_du_garant_illisibles():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=None))
+    assert r.criteres == "Non évaluable"
+    assert "garant" in r.criteres_motif
+    assert f"garant : {ALERTE_REVENUS_ILLISIBLES}" in r.alertes
+
+
+def test_revenus_du_garant_illisibles_mais_visale():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=None), visale=True)
+    assert r.criteres == "Conforme" and r.via == "Visale"
+    assert f"garant : {ALERTE_REVENUS_ILLISIBLES}" in r.alertes
+
+
+# Tri
+
+def test_groupes():
+    a = evaluer_dossier(dossier(), BIEN)
+    b = evaluer_dossier(dossier(siret="123"), BIEN)
+    c1 = evaluer_dossier(dossier(avec_avis=False), BIEN)
+    c2 = evaluer_dossier(dossier(net=None), BIEN)
+    c3 = evaluer_dossier(dossier(net=1000.0, avec_avis=False), BIEN)   # Incomplet + Non conforme
+    d = evaluer_dossier(dossier(net=1000.0), BIEN)
+    assert [groupe(r) for r in (a, b, c1, c2, c3, d)] == ["a", "b", "c", "c", "c", "d"]
+
+
+def test_tri_par_groupe_puis_date_de_depot():
+    jour = lambda j: datetime(2026, 11, j, 9, 0)
+    a_recent = (evaluer_dossier(dossier(net=5000.0), BIEN), jour(10))
+    a_ancien = (evaluer_dossier(dossier(net=2400.0), BIEN), jour(2))
+    b = (evaluer_dossier(dossier(siret="123"), BIEN), jour(1))
+    c = (evaluer_dossier(dossier(avec_avis=False), BIEN), jour(3))
+    d = (evaluer_dossier(dossier(net=1000.0), BIEN), jour(1))
+    melange = [d, c, a_recent, b, a_ancien]
+    ordre = sorted(melange, key=lambda x: cle_de_tri(x[0], x[1]))
+    # Dans le groupe (a), le plus ancien d'abord, même s'il a un ratio plus faible.
+    assert ordre == [a_ancien, a_recent, b, c, d]

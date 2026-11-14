@@ -120,7 +120,7 @@ def extraire_piece(chemin: Path, client: anthropic.Anthropic | None = None) -> P
         output_format=PieceExtraite,
     )
     if reponse.stop_reason == "refusal":
-        raise ErreurExtraction(f"{chemin.name} : refus du modèle")
+        raise ErreurExtraction(f"{chemin.name} : le modèle a décliné la lecture, à vérifier à la main")
     if reponse.stop_reason == "max_tokens" or reponse.parsed_output is None:
         raise ErreurExtraction(f"{chemin.name} : réponse incomplète ({reponse.stop_reason})")
     return reponse.parsed_output

@@ -3,7 +3,7 @@
 `Bien` vérifie ses propres critères dès sa création : on ne peut pas créer un bien
 qui exige une pièce hors du décret n° 2015-1437, ni un loyer nul ou négatif.
 Les critères autorisés sont uniquement financiers (loyer, ratio de revenus,
-garantie) et la liste des pièces : aucun champ ne porte sur la personne.
+garant, Visale) et la liste des pièces : aucun champ ne porte sur la personne.
 """
 
 from __future__ import annotations
@@ -22,15 +22,13 @@ PIECES_EXIGIBLES = {
 # Le décret autorise « les trois derniers bulletins de salaire », pas davantage.
 NB_BULLETINS_MAX = 3
 
-GARANTIES = {"visale": "Visale", "garant_physique": "garant physique"}
-
 
 class PieceNonAutorisee(ValueError):
     """Pièce demandée hors de la liste du décret n° 2015-1437 (ou non reconnue)."""
 
 
 class CritereInvalide(ValueError):
-    """Critère du bien ou du dossier impossible (loyer négatif, garantie inconnue…)."""
+    """Critère du bien impossible (loyer nul ou négatif, ratio nul…)."""
 
 
 @dataclass(frozen=True)
@@ -38,7 +36,8 @@ class Bien:
     nom: str                       # libellé du logement, ex. « T2 rue des Lilas »
     loyer_cc: float                # loyer charges comprises, en euros par mois
     ratio_min: float = 3.0         # revenus mensuels nets ≥ ratio_min × loyer CC
-    garant_accepte: bool = True    # une garantie peut-elle compenser des revenus trop justes ?
+    garant_accepte: bool = True    # un garant peut-il compenser des revenus trop justes ?
+    visale_acceptee: bool = True   # la garantie Visale peut-elle les compenser ?
     pieces_exigees: tuple[str, ...] = tuple(PIECES_EXIGIBLES)
     nb_bulletins: int = 3          # nombre de bulletins exigés (1 à 3)
 
