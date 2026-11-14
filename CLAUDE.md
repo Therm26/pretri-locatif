@@ -115,5 +115,15 @@ tests/
   - Tests : `tests/test_db.py`. Total : 120.
   - Décision du gestionnaire : prévue à l'étape 6.
 
+### À faire à l'étape 6 (décision du gestionnaire), exigences déjà fixées
+- `purger()` ne supprime JAMAIS un dossier retenu.
+- Le délai de 3 mois court à partir de la décision de non-retenue, pas du dépôt. Aujourd'hui (5a), `a_supprimer_le` = dépôt + 3 mois : à changer.
+- Pistes prévues :
+  - `a_supprimer_le` devient NULL tant qu'il n'y a pas de décision « non retenu » ; à cette décision, il vaut date de décision + 3 mois.
+  - Si la décision repasse à « retenu », `a_supprimer_le` revient à NULL.
+  - Double sécurité : `purger()` exclut aussi explicitement les dossiers retenus, même si `a_supprimer_le` est rempli par erreur.
+  - Tests : dossier retenu jamais purgé, même des années après ; non retenu purgé 3 mois après la décision, pas après le dépôt ; retenu puis non retenu, et l'inverse.
+- Question ouverte : que faire d'un dossier sans aucune décision ? Avec ces règles, il serait gardé indéfiniment.
+
 ### Prochaine étape
 - **Étape 5b** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
