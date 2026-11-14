@@ -109,12 +109,13 @@ def test_bien_sans_critere_interdit():
 # --- 2. Les vrais dossiers fictifs (loyer 800 €, ratio 3) ---------------------------
 
 @pas_de_donnees
-def test_les_vingt_dossiers():
-    non_conformes = {"D01", "D09", "D13", "D19", "D20"}   # ratio < 3
-    a_verifier = {"D05", "D09", "D13", "D17"}             # dossiers piégés
+def test_les_vingt_deux_dossiers():
+    non_conformes = {"D01", "D09", "D13", "D19", "D20", "D21"}   # ratio < 3
+    a_verifier = {"D05", "D09", "D13", "D17",   # dossiers piégés
+                  "D21", "D22"}                 # sans avis ; net illisible sur un bulletin
     for v in json.loads(VERITE.read_text("utf-8")):
         r = evaluer_dossier(charger(v["id"]), BIEN)
-        attendu = ("Complet",
+        attendu = ("Incomplet" if v["id"] == "D21" else "Complet",
                    "Non conforme" if v["id"] in non_conformes else "Conforme",
                    "À vérifier" if v["id"] in a_verifier else "OK")
         assert statuts(r) == attendu, (v["id"], r.criteres_motif, r.alertes)
@@ -127,6 +128,32 @@ def test_motif_chiffre_sur_un_vrai_dossier():
     assert r.ratio == pytest.approx(2166.54 / 800, abs=0.001)
     for morceau in ("2 166,54 €", "2,71", "800,00 €", "3,00"):
         assert morceau in r.criteres_motif
+
+
+@pas_de_donnees
+def test_source_du_revenu_dans_le_motif():
+    r = evaluer_dossier(charger("D01"), BIEN)
+    assert "(moyenne du net à payer avant impôt des 3 derniers bulletins)" in r.criteres_motif
+
+
+@pas_de_donnees
+def test_d21_sans_avis():
+    r = evaluer_dossier(charger("D21"), BIEN)
+    assert r.pieces_manquantes == ["avis d'imposition"]
+    assert any(a.startswith("bulletins/avis (non vérifiable)") for a in r.alertes)
+
+
+@pas_de_donnees
+def test_d22_net_illisible_sur_un_bulletin():
+    pieces = charger("D22")
+    r = evaluer_dossier(pieces, BIEN)
+    nets = [pieces[n].salaire_net for n in ("bulletin_2026_08.pdf", "bulletin_2026_10.pdf")]
+    assert pieces["bulletin_2026_09.pdf"].salaire_net is None
+    assert r.revenus_mensuels == pytest.approx(sum(nets) / 2)       # moyenne des 2 lisibles
+    assert ("de 2 bulletin(s) sur 3, net illisible sur bulletin_2026_09.pdf"
+            in r.criteres_motif)
+    assert r.alertes == ["net/brut (non vérifiable) : bulletin_2026_09.pdf : "
+                         "net à payer absent ou illisible"]
 
 
 @pas_de_donnees
@@ -167,6 +194,23 @@ def test_non_conforme_motif_chiffre():
     assert r.criteres == "Non conforme"
     assert "2 000,00 €" in r.criteres_motif and "2,50" in r.criteres_motif
     assert "ni garant ni Visale" in r.criteres_motif
+
+
+def test_source_du_revenu_cas_inventes():
+    assert "des 3 derniers bulletins" in evaluer_dossier(dossier(), BIEN).criteres_motif
+    un_seul = Bien(nom="T2", loyer_cc=800.0, nb_bulletins=1)
+    assert "du dernier bulletin)" in evaluer_dossier(dossier(nb_bulletins=1), un_seul).criteres_motif
+    pieces = dossier()
+    pieces["bulletin_2026_09.pdf"] = pieces["bulletin_2026_09.pdf"].model_copy(
+        update={"salaire_net": None})
+    r = evaluer_dossier(pieces, BIEN)
+    assert r.criteres == "Conforme" and r.controles == "À vérifier"
+    assert "de 2 bulletin(s) sur 3, net illisible sur bulletin_2026_09.pdf" in r.criteres_motif
+
+
+def test_source_du_revenu_du_garant():
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=dossier(net=3000.0))
+    assert r.criteres_motif.count("moyenne du net à payer avant impôt des 3 derniers bulletins") == 2
 
 
 def test_piece_manquante_independante_des_criteres():

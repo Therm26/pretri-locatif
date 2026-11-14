@@ -96,7 +96,10 @@ def test_dossiers_sains_sans_anomalie():
             continue
         resultat = controler_dossier(charger(v["id"]))
         assert anomalies(resultat) == set(), (v["id"], [(c.nom, c.motif) for c in resultat])
-        assert {c.statut for c in resultat} == {"ok"}, v["id"]
+        # D21 (sans avis) et D22 (net taché) : une donnée manque, aucune accusation.
+        non_verifiables = {c.nom for c in resultat if c.statut == "non_verifiable"}
+        attendu = {"D21": {"bulletins_vs_avis"}, "D22": {"net_brut"}}.get(v["id"], set())
+        assert non_verifiables == attendu, v["id"]
 
 
 # --- 2. Cas limites inventés ---------------------------------------------------

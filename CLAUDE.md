@@ -94,5 +94,13 @@ tests/
   - Sur les 20 dossiers fictifs (loyer 800 €) : 13 en (a), D05 et D17 en (b), D01, D09, D13, D19, D20 en (d).
   - Tests : `tests/test_regles.py`. Total : 77 tests.
 
+- **Compléments** (14/11/2026) :
+  - Motif `criteres` : il dit d'où vient le revenu, « moyenne du net à payer avant impôt des 3 derniers bulletins ». Si un net est illisible, la moyenne porte sur les bulletins lisibles et le motif le dit (« de 2 bulletin(s) sur 3, net illisible sur bulletin_2026_09.pdf ») ; le contrôle net/brut passe en non vérifiable, donc le dossier est « À vérifier ».
+  - Générateur : 22 dossiers. `DEFAUTS` (sans fraude) : D21 sans avis d'imposition, D22 net à payer couvert par une tache sur le bulletin de septembre (la valeur n'est pas écrite sous la tache). D21 et D22 sont tirés après les 20 premiers : D01 à D20 restent identiques octet pour octet. `verite.json` a un champ `defaut`.
+  - Le générateur n'efface plus `data/fake/extraction/` (réponses de Claude déjà payées).
+  - Extraction D21 et D22 : 20/20 ; Claude renvoie `null` pour le net taché. Total `taux_par_champ` : 550/550.
+  - D21 : Incomplet, Non conforme (1,89), À vérifier → groupe (c). D22 : Complet, Conforme (4,61), À vérifier → groupe (b).
+  - Tests : 86.
+
 ### Prochaine étape
 - **Étape 5** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.

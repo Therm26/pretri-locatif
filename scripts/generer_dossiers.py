@@ -5,6 +5,8 @@ Chaque dossier contient 6 pièces : pièce d'identité factice, contrat de trava
 (revenus 2025). Tout est fictif et marqué « DOCUMENT FICTIF ».
 
 4 dossiers contiennent volontairement une anomalie (voir FRAUDES ci-dessous).
+2 dossiers ont un défaut sans fraude (voir DEFAUTS) : D21 sans avis d'imposition,
+D22 avec le net à payer illisible (tache) sur le bulletin de septembre.
 Le fichier `verite.json` décrit, pour chaque dossier, les valeurs attendues et
 l'anomalie éventuelle : il servira à vérifier l'extraction et les contrôles.
 
@@ -27,7 +29,7 @@ from reportlab.pdfgen import canvas
 
 from src.controles import luhn_valide
 
-NB_DOSSIERS = 20
+NB_DOSSIERS = 22
 MOIS_BULLETINS = [(2026, 8), (2026, 9), (2026, 10)]
 ANNEE_REVENUS_AVIS = 2025
 
@@ -38,6 +40,14 @@ FRAUDES = {
     13: "avis_incoherent",    # salaires de l'avis = 45 % de ce que disent les bulletins
     17: "dates_impossibles",  # embauche après les bulletins + période au 31/09
 }
+
+# Numéro du dossier -> défaut sans fraude (dossier incomplet ou mal scanné).
+# Ces dossiers sont tirés APRÈS les 20 premiers : D01 à D20 restent identiques.
+DEFAUTS = {
+    21: "sans_avis",          # l'avis d'imposition n'a pas été fourni
+    22: "net_illisible",      # net à payer masqué par une tache sur le bulletin de septembre
+}
+BULLETIN_ILLISIBLE = (2026, 9)
 
 # Intitulés neutres : les métiers de Faker sont parfois genrés (« infirmière »),
 # ce qui laisserait deviner le sexe, une donnée que l'outil ne doit pas voir.
@@ -133,6 +143,21 @@ class PageFictive:
         self.c.drawString(self.COLONNE_VALEUR, self.y, valeur)
         self.y -= 22
 
+    def ligne_tachee(self, libelle: str):
+        """Libellé lisible, valeur couverte par une tache d'encre.
+
+        La valeur n'est PAS écrite sous la tache : sinon elle resterait dans le texte
+        du PDF et Claude pourrait la lire quand même.
+        """
+        self.c.setFont("Helvetica-Bold", 11)
+        self.c.drawString(self.MARGE, self.y, libelle)
+        self.c.saveState()
+        self.c.setFillGray(0.15)
+        self.c.ellipse(self.COLONNE_VALEUR - 4, self.y - 6, self.COLONNE_VALEUR + 80, self.y + 13,
+                       stroke=0, fill=1)
+        self.c.restoreState()
+        self.y -= 22
+
     def paragraphe(self, texte: str):
         self.c.setFont("Helvetica-Oblique", 10)
         self.c.drawString(self.MARGE, self.y, texte)
@@ -193,6 +218,7 @@ def tirer_profil(numero: int, fake: Faker) -> dict:
         "numero_fiscal": fake.numerify("#############"),
         "fraude": None,
         "detail_fraude": None,
+        "defaut": None,
         "periode_fin_forcee": {},  # (année, mois) -> texte de date impossible
     }
 
@@ -267,6 +293,10 @@ def periode_bulletin(p: dict, annee: int, mois: int) -> tuple[str, str]:
     return jj_mm_aaaa(date(annee, mois, 1)), fin
 
 
+def net_illisible(p: dict, annee: int, mois: int) -> bool:
+    return p["defaut"] == "net_illisible" and (annee, mois) == BULLETIN_ILLISIBLE
+
+
 def pdf_bulletin(p: dict, annee: int, mois: int, chemin: Path) -> None:
     debut_texte, fin_texte = periode_bulletin(p, annee, mois)
     cotisations = round(p["brut"] - p["net"], 2)
@@ -286,7 +316,10 @@ def pdf_bulletin(p: dict, annee: int, mois: int, chemin: Path) -> None:
     page.espace()
     page.ligne("Salaire de base brut :", euros(p["brut"]))
     page.ligne("Total cotisations salariales :", "- " + euros(cotisations))
-    page.ligne("Net à payer avant impôt :", euros(p["net"]))
+    if net_illisible(p, annee, mois):
+        page.ligne_tachee("Net à payer avant impôt :")
+    else:
+        page.ligne("Net à payer avant impôt :", euros(p["net"]))
     page.ligne("Net imposable :", euros(p["net_imposable"]))
     page.ligne("Cumul net imposable annuel :", euros(cumul))
     page.enregistrer()
@@ -311,6 +344,7 @@ def verite_du_profil(p: dict) -> dict:
         "id": p["id"],
         "fraude": p["fraude"],
         "detail_fraude": p["detail_fraude"],
+        "defaut": p["defaut"],
         "attendu": {
             "employeur": p["employeur"],
             "siret": p["siret"],
@@ -320,8 +354,9 @@ def verite_du_profil(p: dict) -> dict:
             "type_contrat": p["type_contrat"],
             "date_debut_contrat": p["date_debut"].isoformat(),
             "date_fin_contrat": p["date_fin"].isoformat() if p["date_fin"] else None,
-            "salaires_declares": p["salaires_declares"],
-            "revenu_fiscal_reference": p["rfr"],
+            # Sans avis fourni, l'extraction ne doit rien inventer.
+            "salaires_declares": None if p["defaut"] == "sans_avis" else p["salaires_declares"],
+            "revenu_fiscal_reference": None if p["defaut"] == "sans_avis" else p["rfr"],
         },
         # Une entrée par bulletin. Les dates de période sont en texte, comme imprimées,
         # car une date impossible (31/09/2026) ne peut pas s'écrire en ISO.
@@ -330,7 +365,7 @@ def verite_du_profil(p: dict) -> dict:
                 "periode_debut": periode_bulletin(p, annee, mois)[0],
                 "periode_fin": periode_bulletin(p, annee, mois)[1],
                 "salaire_brut": p["brut"],
-                "salaire_net": p["net"],
+                "salaire_net": None if net_illisible(p, annee, mois) else p["net"],
                 "net_imposable": p["net_imposable"],
             }
             for annee, mois in MOIS_BULLETINS
@@ -342,8 +377,11 @@ def generer(sortie: Path, graine: int = 42) -> list[dict]:
     """Crée les dossiers dans `sortie` et renvoie la vérité terrain."""
     fake = Faker("fr_FR")
     fake.seed_instance(graine)  # même graine -> mêmes dossiers
-    if sortie.exists():
-        shutil.rmtree(sortie)
+    # On n'efface que ce que le générateur produit : les réponses de Claude déjà
+    # payées (data/fake/extraction/) sont conservées.
+    for ancien in [*sortie.glob("D[0-9][0-9]"), sortie / "zips"]:
+        if ancien.is_dir():
+            shutil.rmtree(ancien)
     (sortie / "zips").mkdir(parents=True)
 
     verite = []
@@ -351,6 +389,7 @@ def generer(sortie: Path, graine: int = 42) -> list[dict]:
         profil = tirer_profil(numero, fake)
         if numero in FRAUDES:
             appliquer_fraude(profil, FRAUDES[numero])
+        profil["defaut"] = DEFAUTS.get(numero)
 
         dossier = sortie / profil["id"]
         dossier.mkdir()
@@ -358,7 +397,8 @@ def generer(sortie: Path, graine: int = 42) -> list[dict]:
         pdf_contrat(profil, dossier / "contrat_travail.pdf")
         for annee, mois in MOIS_BULLETINS:
             pdf_bulletin(profil, annee, mois, dossier / nom_bulletin(annee, mois))
-        pdf_avis(profil, dossier / f"avis_imposition_{ANNEE_REVENUS_AVIS + 1}.pdf")
+        if profil["defaut"] != "sans_avis":
+            pdf_avis(profil, dossier / f"avis_imposition_{ANNEE_REVENUS_AVIS + 1}.pdf")
 
         # Une archive zip par dossier, pour tester l'import dans l'interface.
         with zipfile.ZipFile(sortie / "zips" / f"{profil['id']}.zip", "w") as z:
@@ -379,7 +419,9 @@ def main():
     args = parser.parse_args()
     verite = generer(args.sortie, args.graine)
     nb_fraudes = sum(1 for v in verite if v["fraude"])
-    print(f"{len(verite)} dossiers créés dans {args.sortie} (dont {nb_fraudes} avec anomalie).")
+    nb_defauts = sum(1 for v in verite if v["defaut"])
+    print(f"{len(verite)} dossiers créés dans {args.sortie} "
+          f"(dont {nb_fraudes} avec anomalie et {nb_defauts} avec un défaut).")
 
 
 if __name__ == "__main__":

@@ -140,7 +140,9 @@ def controle_net_brut(pieces: dict[str, PieceExtraite]) -> Controle:
     anomalies, manques, ratios = [], [], []
     for nom, b in bulletins(pieces):
         if not b.salaire_brut or b.salaire_net is None:
-            manques.append(f"{nom} : brut ou net absent")
+            absents = [libelle for libelle, valeur in
+                       (("brut", b.salaire_brut), ("net à payer", b.salaire_net)) if not valeur]
+            manques.append(f"{nom} : {' et '.join(absents)} absent ou illisible")
             continue
         ratio = round(b.salaire_net / b.salaire_brut, 4)
         ratios.append(ratio)

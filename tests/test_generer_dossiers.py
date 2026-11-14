@@ -1,12 +1,15 @@
-"""Vérifie que le générateur produit bien les 20 dossiers attendus."""
+"""Vérifie que le générateur produit bien les 22 dossiers attendus."""
 
+import base64
 import json
+import re
 import zipfile
+import zlib
 
 import pytest
 
 from scripts.generer_dossiers import (
-    FRAUDES, casser_siret, completer_luhn, generer, luhn_valide,
+    DEFAUTS, FRAUDES, casser_siret, completer_luhn, euros, generer, luhn_valide,
 )
 
 PIECES = {
@@ -14,6 +17,15 @@ PIECES = {
     "bulletin_2026_08.pdf", "bulletin_2026_09.pdf", "bulletin_2026_10.pdf",
     "avis_imposition_2026.pdf",
 }
+
+
+SANS_AVIS = PIECES - {"avis_imposition_2026.pdf"}
+
+
+def texte_pdf(chemin) -> str:
+    """Texte brut de la page : reportlab l'encode en ASCII85 puis le compresse (zlib)."""
+    flux = re.search(rb"stream\r?\n(.*?~>)", chemin.read_bytes(), re.S).group(1)
+    return zlib.decompress(base64.a85decode(flux, adobe=True)).decode("latin-1")
 
 
 @pytest.fixture(scope="module")
@@ -36,18 +48,18 @@ def test_luhn_sur_un_siret_connu():
     assert not luhn_valide(casser_siret(siret))
 
 
-def test_vingt_dossiers_complets(sortie):
+def test_vingt_deux_dossiers(sortie):
     dossiers = sorted(d for d in sortie.iterdir() if d.is_dir() and d.name != "zips")
-    assert len(dossiers) == 20
+    assert len(dossiers) == 22
     for d in dossiers:
-        assert {f.name for f in d.iterdir()} == PIECES
+        assert {f.name for f in d.iterdir()} == (SANS_AVIS if d.name == "D21" else PIECES)
         for f in d.iterdir():
             assert f.read_bytes().startswith(b"%PDF")
 
 
 def test_un_zip_par_dossier(sortie):
     zips = sorted((sortie / "zips").glob("*.zip"))
-    assert len(zips) == 20
+    assert len(zips) == 22
     with zipfile.ZipFile(zips[0]) as z:
         assert set(z.namelist()) == PIECES
 
@@ -58,9 +70,42 @@ def test_quatre_fraudes_differentes(verite):
     assert set(fraudes.values()) == set(FRAUDES.values())
 
 
+def test_deux_defauts_sans_fraude(verite):
+    defauts = {v["id"]: v["defaut"] for v in verite if v["defaut"]}
+    assert defauts == {"D21": "sans_avis", "D22": "net_illisible"} == {
+        f"D{n}": d for n, d in DEFAUTS.items()}
+    assert not any(v["fraude"] for v in verite if v["defaut"])
+
+
+def test_d21_sans_avis(verite):
+    d21 = next(v for v in verite if v["id"] == "D21")
+    assert d21["attendu"]["salaires_declares"] is None
+    assert d21["attendu"]["revenu_fiscal_reference"] is None
+
+
+def test_d22_net_illisible_sur_septembre(sortie, verite):
+    d22 = next(v for v in verite if v["id"] == "D22")
+    net = euros(d22["attendu"]["salaire_net"]).removesuffix(" €")
+    assert d22["bulletins"]["bulletin_2026_09.pdf"]["salaire_net"] is None
+    assert d22["bulletins"]["bulletin_2026_08.pdf"]["salaire_net"] is not None
+    # Le montant n'est pas caché sous la tache : il est absent du PDF.
+    septembre = texte_pdf(sortie / "D22" / "bulletin_2026_09.pdf")
+    assert "payer avant imp" in septembre and net not in septembre   # libellé gardé
+    assert "Net imposable" in septembre
+    assert net in texte_pdf(sortie / "D22" / "bulletin_2026_08.pdf")
+
+
+def test_regenerer_garde_les_extractions(tmp_path):
+    (tmp_path / "extraction").mkdir(parents=True)
+    (tmp_path / "extraction" / "D01.json").write_text("{}", "utf-8")
+    generer(tmp_path, graine=42)
+    generer(tmp_path, graine=42)
+    assert (tmp_path / "extraction" / "D01.json").exists()
+
+
 def test_dossiers_sains_coherents(verite):
     for v in verite:
-        if v["fraude"]:
+        if v["fraude"] or v["defaut"] == "sans_avis":
             continue
         a = v["attendu"]
         assert luhn_valide(a["siret"]), v["id"]
@@ -103,7 +148,7 @@ def test_verite_par_bulletin(verite):
     for v in verite:
         assert set(v["bulletins"]) == {n for n in PIECES if n.startswith("bulletin_")}
         for b in v["bulletins"].values():
-            assert b["salaire_net"] == v["attendu"]["salaire_net"]
+            assert b["salaire_net"] in (v["attendu"]["salaire_net"], None)
     d17 = next(v for v in verite if v["fraude"] == "dates_impossibles")
     assert d17["bulletins"]["bulletin_2026_09.pdf"]["periode_fin"] == "31/09/2026"
     d01 = next(v for v in verite if v["id"] == "D01")

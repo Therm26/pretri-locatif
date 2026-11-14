@@ -17,6 +17,9 @@ Règle des critères :
     2. sinon garant accepté par le bien et garant au ratio   -> Conforme « via garant »
     3. sinon Visale fournie et acceptée par le bien          -> Conforme « via Visale »
     4. sinon                                                 -> Non conforme
+    Revenus = moyenne du net à payer avant impôt des bulletins (les 3 derniers
+    exigés par défaut) ; le motif dit sur combien de bulletins elle est calculée.
+    Si un net est illisible, la moyenne porte sur les autres et le motif le dit.
     Des revenus illisibles (candidat, ou garant quand il est le dernier recours)
     donnent « Non évaluable » : c'est l'extraction qui a échoué, cela ne prouve
     rien contre le candidat. Une alerte demande alors de vérifier à la main.
@@ -87,9 +90,26 @@ def motif_pieces(pieces: dict[str, PieceExtraite], manques: list[str]) -> str:
 # --- Critères financiers --------------------------------------------------------------
 
 def revenus_mensuels(pieces: dict[str, PieceExtraite]) -> Optional[float]:
+    """Moyenne du net à payer avant impôt des bulletins dont le net est lisible."""
     nets = [p.salaire_net for p in pieces.values()
             if p.type_piece == "bulletin_salaire" and p.salaire_net is not None]
     return round(sum(nets) / len(nets), 2) if nets else None
+
+
+def source_revenus(pieces: dict[str, PieceExtraite]) -> str:
+    """D'où vient le chiffre des revenus, en clair, pour le motif.
+
+    « moyenne du net à payer avant impôt des 3 derniers bulletins »
+    « moyenne du net à payer avant impôt de 2 bulletins sur 3, net illisible sur bulletin_2026_09.pdf »
+    """
+    bulletins = sorted(nom for nom, p in pieces.items() if p.type_piece == "bulletin_salaire")
+    illisibles = [nom for nom in bulletins if pieces[nom].salaire_net is None]
+    lisibles = len(bulletins) - len(illisibles)
+    texte = "moyenne du net à payer avant impôt"
+    if not illisibles:
+        return f"{texte} des {lisibles} derniers bulletins" if lisibles > 1 else f"{texte} du dernier bulletin"
+    return (f"{texte} de {lisibles} bulletin(s) sur {len(bulletins)}, "
+            f"net illisible sur {', '.join(illisibles)}")
 
 
 def atteint(revenus: float, bien: Bien) -> bool:
@@ -97,18 +117,24 @@ def atteint(revenus: float, bien: Bien) -> bool:
     return revenus / bien.loyer_cc >= bien.ratio_min - 1e-9
 
 
-def chiffres(qui: str, revenus: float, bien: Bien) -> str:
-    """« candidat : revenus 2 000,00 €/mois = 2,50 × loyer CC 800,00 € (minimum 3,00) »"""
-    return (f"{qui} : revenus {euros(revenus)}/mois = {virgule(revenus / bien.loyer_cc)} × "
-            f"loyer CC {euros(bien.loyer_cc)} (minimum {virgule(bien.ratio_min)})")
+def chiffres(qui: str, revenus: float, source: str, bien: Bien) -> str:
+    """« candidat : revenus 2 000,00 €/mois (moyenne du net à payer avant impôt des
+    3 derniers bulletins) = 2,50 × loyer CC 800,00 € (minimum 3,00) »"""
+    return (f"{qui} : revenus {euros(revenus)}/mois ({source}) = "
+            f"{virgule(revenus / bien.loyer_cc)} × loyer CC {euros(bien.loyer_cc)} "
+            f"(minimum {virgule(bien.ratio_min)})")
 
 
-def evaluer_criteres(revenus: Optional[float], revenus_garant: Optional[float], bien: Bien,
-                     avec_garant: bool, visale: bool):
+def evaluer_criteres(pieces: dict[str, PieceExtraite], garant: Optional[dict[str, PieceExtraite]],
+                     bien: Bien, visale: bool):
     """Renvoie (statut, motif, via)."""
+    revenus = revenus_mensuels(pieces)
+    avec_garant = garant is not None
+    # Le garant n'est examiné que si le bien accepte les garants.
+    revenus_garant = revenus_mensuels(garant) if avec_garant and bien.garant_accepte else None
     if revenus is None:
         return "Non évaluable", MOTIF_REVENUS_ILLISIBLES, None
-    texte = chiffres("candidat", revenus, bien)
+    texte = chiffres("candidat", revenus, source_revenus(pieces), bien)
     if atteint(revenus, bien):
         return "Conforme", texte, None
 
@@ -120,7 +146,7 @@ def evaluer_criteres(revenus: Optional[float], revenus_garant: Optional[float], 
         garant_illisible = True
         raisons.append("revenus du garant illisibles, ratio du garant impossible à calculer")
     elif avec_garant:
-        texte_garant = chiffres("garant", revenus_garant, bien)
+        texte_garant = chiffres("garant", revenus_garant, source_revenus(garant), bien)
         if atteint(revenus_garant, bien):
             return "Conforme", f"{texte} ; via garant, {texte_garant}", "garant"
         raisons.append(f"{texte_garant}, sous le minimum")
@@ -164,8 +190,7 @@ def evaluer_dossier(pieces: dict[str, PieceExtraite], bien: Bien,
     garant_utile = garant is not None and bien.garant_accepte
     revenus_garant = revenus_mensuels(garant) if garant_utile else None
 
-    criteres, motif, via = evaluer_criteres(revenus, revenus_garant, bien,
-                                            avec_garant=garant is not None, visale=visale)
+    criteres, motif, via = evaluer_criteres(pieces, garant, bien, visale)
 
     detail = controler_dossier(pieces)
     alertes = alertes_controles(detail)
