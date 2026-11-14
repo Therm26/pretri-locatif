@@ -4,3 +4,5 @@ pytest      # tests automatiques
 anthropic>=2.8     # SDK officiel de l'API Claude (étape 2)
 pydantic           # validation du JSON renvoyé par Claude (étape 2)
 python-dotenv      # lecture de la clé API dans .env (étape 2)
+streamlit          # interface web (étape 5b)
+pandas             # tableaux affichés par Streamlit (étape 5b)

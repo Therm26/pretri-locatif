@@ -21,3 +21,12 @@ copy .env.example .env    # puis y mettre la clé API Anthropic
 ```
 python -m pytest
 ```
+
+## Lancer l'interface
+
+```
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Puis ouvrir http://localhost:8501. Le bouton « Charger les dossiers fictifs » remplit
+la base avec les 22 dossiers de démonstration sans appeler l'API.

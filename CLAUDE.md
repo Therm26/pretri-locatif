@@ -115,6 +115,18 @@ tests/
   - Tests : `tests/test_db.py`. Total : 120.
   - Décision du gestionnaire : prévue à l'étape 6.
 
+- **Étape 5b** (14/11/2026) : `app.py` (Streamlit) et `src/depot.py`.
+  - Lancer : `.\.venv\Scripts\python.exe -m streamlit run app.py`, puis http://localhost:8501. Autre base : variable `PRETRI_BASE`.
+  - Barre latérale : choisir un bien, créer un bien (erreurs de `Bien` affichées), bouton « Charger les dossiers fictifs » (import 5a, sans API).
+  - Onglet Dossiers : compteurs par groupe, tableau trié par groupe puis dépôt, clic sur une ligne = détail (3 statuts + motifs, alertes, 4 contrôles du candidat, valeurs lues par Claude, date de suppression), bascule « Certificat Visale vu » qui réévalue le dossier.
+  - Le dossier ouvert est retenu par son id (`st.session_state["ouvert"]`) ; la clé du tableau dépend de l'ordre des lignes, pour qu'une sélection par numéro de ligne ne désigne jamais un autre dossier après un réordonnancement.
+  - Onglet Importer : zip ou PDF/images du candidat, pièces du garant (facultatif), Visale, date et heure de dépôt (pas dans le futur). Annonce le nombre de lectures payantes ; bouton désactivé sans clé API. Champs propres à chaque bien.
+  - `src/depot.py` : `lire_envoi()` ouvre les zip (noms aplatis, fichiers cachés et `__MACOSX` ignorés, autres formats listés comme ignorés, doublons refusés, au plus 30 fichiers et 50 Mo) ; `prochaine_reference()` attribue D01, D02… (jamais un nom, jamais une référence déjà vue dans le journal) ; `deposer()` lit chaque fichier avec Claude dans un dossier temporaire, puis enregistre et évalue. Les PDF ne sont pas conservés, seulement les valeurs extraites.
+  - Si un fichier est illisible, rien n'est enregistré ; le journal note `extraction_echec` (référence et nombre de pièces). Succès : `extraction`, `import`, `evaluation`.
+  - `db.py` : `lister_biens`, `charger_dossier`, `modifier_visale` (journal `visale` + réévaluation). Purge à 3 mois lancée à chaque affichage.
+  - Vérifié dans le navigateur sur une base d'essai : 13/3/1/5 par groupe, Visale sur D01 → groupe a puis retour en d, création de bien, ratio 0 refusé. Import réel via l'API non testé depuis l'interface (logique testée avec un faux extracteur).
+  - Tests : `tests/test_depot.py`. Total : 135.
+
 ### À faire à l'étape 6 (décision du gestionnaire), exigences déjà fixées
 - Décision par dossier : sans décision / retenu / non retenu, avec sa date ; chaque décision est journalisée (statut seulement, aucune donnée lue).
 - Statut du bien : Ouvert / Loué (date de clôture au passage à Loué).
@@ -136,4 +148,5 @@ tests/
   - le journal survit à toutes ces purges (`dossier_id` NULL, `reference` gardée).
 
 ### Prochaine étape
-- **Étape 5b** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
+- Essayer un import réel depuis l'interface (un zip fictif, 6 lectures payantes).
+- **Étape 6** : décision du gestionnaire (exigences ci-dessus), statut du bien Ouvert / Loué, journal consultable et export CSV de la sélection.

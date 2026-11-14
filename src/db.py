@@ -215,6 +215,11 @@ def trouver_bien(conn: sqlite3.Connection, nom: str) -> Optional[int]:
     return ligne["id"] if ligne else None
 
 
+def lister_biens(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Tous les biens, le plus récent d'abord."""
+    return conn.execute("SELECT id, nom, loyer_cc, ratio_min FROM bien ORDER BY id DESC").fetchall()
+
+
 # --- Dossiers et pièces ---------------------------------------------------------------
 
 def ajouter_dossier(conn: sqlite3.Connection, bien_id: int, reference: str, date_depot: datetime,
@@ -253,6 +258,28 @@ def charger_pieces(conn: sqlite3.Connection, dossier_id: int):
                               (dossier_id,)):
         lots[ligne["role"]][ligne["fichier"]] = PieceExtraite.model_validate_json(ligne["donnees"])
     return lots["candidat"], (lots["garant"] or None)
+
+
+def charger_dossier(conn: sqlite3.Connection, dossier_id: int) -> sqlite3.Row:
+    """Le dossier et son dernier résultat (colonnes du résultat à NULL s'il n'est pas évalué)."""
+    ligne = conn.execute(
+        "SELECT d.*, r.pieces, r.pieces_motif, r.pieces_manquantes, r.criteres, r.criteres_motif, "
+        "r.via, r.controles, r.alertes, r.revenus_mensuels, r.ratio, r.groupe, r.calcule_le "
+        "FROM dossier d LEFT JOIN resultat r ON r.dossier_id = d.id WHERE d.id = ?",
+        (dossier_id,)).fetchone()
+    if ligne is None:
+        raise KeyError(f"dossier {dossier_id} introuvable")
+    return ligne
+
+
+def modifier_visale(conn: sqlite3.Connection, dossier_id: int, visale: bool) -> Resultat:
+    """Le gestionnaire coche ou décoche « certificat Visale vu » ; le dossier est réévalué."""
+    dossier = charger_dossier(conn, dossier_id)
+    with conn:
+        conn.execute("UPDATE dossier SET visale = ? WHERE id = ?", (int(visale), dossier_id))
+        journaliser(conn, "visale", {"visale_fournie": visale}, bien_id=dossier["bien_id"],
+                    dossier_id=dossier_id, reference=dossier["reference"])
+    return evaluer(conn, dossier_id)
 
 
 # --- Évaluation -------------------------------------------------------------------------
