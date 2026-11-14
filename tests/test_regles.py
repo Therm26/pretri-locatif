@@ -189,6 +189,38 @@ def test_ratio_limite(net, attendu):
     assert evaluer_dossier(dossier(net=net), BIEN).criteres == attendu
 
 
+def test_limite_exacte_2400_pour_800_ratio_3():
+    """2 400,00 € de revenus, loyer 800,00 €, ratio 3 : pile au minimum, donc Conforme."""
+    bien = Bien(nom="T2", loyer_cc=800.00, ratio_min=3)
+    assert bien.loyer_centimes == 80000 and bien.ratio_centiemes == 300
+    r = evaluer_dossier(dossier(net=2400.00), bien)
+    assert r.criteres == "Conforme" and r.revenus_mensuels == 2400.00
+    assert evaluer_dossier(dossier(net=2399.99), bien).criteres == "Non conforme"
+
+
+@pytest.mark.parametrize("net, attendu", [(1500.30, "Conforme"), (1500.29, "Non conforme")])
+def test_limite_exacte_la_ou_le_float_se_trompe(net, attendu):
+    """En float, 1 500,30 / 500,10 = 2,9999999999999996 < 3 ; en centimes, c'est 3 pile."""
+    assert 1500.30 / 500.10 < 3                       # le piège existe bien
+    bien = Bien(nom="T2", loyer_cc=500.10, ratio_min=3)
+    assert evaluer_dossier(dossier(net=net), bien).criteres == attendu
+
+
+def test_limite_exacte_avec_des_nets_differents():
+    """Moyenne de 2 399,99 / 2 400,00 / 2 400,01 = 2 400,00 pile : Conforme."""
+    pieces = dossier()
+    for nom, net in zip(sorted(n for n in pieces if n.startswith("bulletin")),
+                        (2399.99, 2400.00, 2400.01)):
+        pieces[nom] = pieces[nom].model_copy(update={"salaire_net": net})
+    assert evaluer_dossier(pieces, BIEN).criteres == "Conforme"
+
+
+@pytest.mark.parametrize("modif", [{"loyer_cc": 800.005}, {"ratio_min": 2.555}])
+def test_plus_de_deux_decimales_refuse(modif):
+    with pytest.raises(CritereInvalide, match="près"):
+        Bien(**{"nom": "T2", "loyer_cc": 800, **modif})
+
+
 def test_non_conforme_motif_chiffre():
     r = evaluer_dossier(dossier(net=2000.0), BIEN)
     assert r.criteres == "Non conforme"
@@ -301,11 +333,49 @@ def test_garant_insuffisant_mais_visale():
 def test_revenus_illisibles_non_evaluable():
     r = evaluer_dossier(dossier(net=None), BIEN)
     assert r.criteres == "Non évaluable"
-    assert r.criteres_motif == "revenus illisibles, ratio impossible à calculer"
+    assert r.criteres_motif == ("revenus illisibles, ratio impossible à calculer : "
+                                "0 net(s) lisible(s) sur 3 bulletin(s), il en faut au moins 2")
     assert r.ratio is None and r.revenus_mensuels is None
     assert r.controles == "À vérifier"
     assert ALERTE_REVENUS_ILLISIBLES == "revenus illisibles, vérifier les bulletins à la main"
     assert ALERTE_REVENUS_ILLISIBLES in r.alertes
+
+
+def rendre_illisibles(pieces, nb: int):
+    """Efface le net à payer des `nb` premiers bulletins (comme une tache sur le scan)."""
+    for nom in sorted(n for n in pieces if n.startswith("bulletin"))[:nb]:
+        pieces[nom] = pieces[nom].model_copy(update={"salaire_net": None})
+    return pieces
+
+
+@pytest.mark.parametrize("illisibles, statut", [
+    (0, "Conforme"),          # 3 nets lisibles sur 3
+    (1, "Conforme"),          # 2 sur 3 : moyenne sur 2, dossier À vérifier (cas D22)
+    (2, "Non évaluable"),     # 1 sur 3 : moins de 2 nets lisibles
+    (3, "Non évaluable"),     # 0 sur 3
+])
+def test_moins_de_deux_nets_lisibles_non_evaluable(illisibles, statut):
+    r = evaluer_dossier(rendre_illisibles(dossier(net=3000.0), illisibles), BIEN)
+    assert r.criteres == statut
+    assert r.controles == ("OK" if illisibles == 0 else "À vérifier")
+    if statut == "Non évaluable":
+        assert r.revenus_mensuels is None and r.ratio is None
+        assert f"{3 - illisibles} net(s) lisible(s) sur 3 bulletin(s), il en faut au moins 2"             in r.criteres_motif
+        assert ALERTE_REVENUS_ILLISIBLES in r.alertes
+    else:
+        assert r.revenus_mensuels == 3000.0
+
+
+def test_un_seul_bulletin_exige_un_net_suffit():
+    un_seul = Bien(nom="T2", loyer_cc=800.0, nb_bulletins=1)
+    assert evaluer_dossier(dossier(nb_bulletins=1), un_seul).criteres == "Conforme"
+
+
+def test_garant_avec_un_seul_net_lisible():
+    garant = rendre_illisibles(dossier(net=3000.0), 2)
+    r = evaluer_dossier(dossier(net=2000.0), BIEN, garant=garant)
+    assert r.criteres == "Non évaluable"
+    assert f"garant : {ALERTE_REVENUS_ILLISIBLES}" in r.alertes
 
 
 def test_revenus_du_garant_illisibles():

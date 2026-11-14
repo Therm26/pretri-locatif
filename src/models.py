@@ -46,6 +46,11 @@ class Bien:
             raise CritereInvalide(f"loyer CC impossible : {self.loyer_cc}")
         if self.ratio_min <= 0:
             raise CritereInvalide(f"ratio minimum impossible : {self.ratio_min}")
+        # Les comparaisons se font en entiers : au plus 2 décimales (centimes, centièmes).
+        if abs(self.loyer_cc * 100 - self.loyer_centimes) > 1e-6:
+            raise CritereInvalide(f"loyer CC au centime près attendu : {self.loyer_cc}")
+        if abs(self.ratio_min * 100 - self.ratio_centiemes) > 1e-6:
+            raise CritereInvalide(f"ratio minimum au centième près attendu : {self.ratio_min}")
         for type_piece in self.pieces_exigees:
             if type_piece not in PIECES_EXIGIBLES:
                 raise PieceNonAutorisee(
@@ -55,3 +60,13 @@ class Bien:
             raise PieceNonAutorisee(
                 f"{self.nb_bulletins} bulletins demandés : le décret n° 2015-1437 limite "
                 f"aux trois derniers bulletins de salaire")
+
+    @property
+    def loyer_centimes(self) -> int:
+        """800.0 -> 80000 (c'est ce que stocke la base)."""
+        return round(self.loyer_cc * 100)
+
+    @property
+    def ratio_centiemes(self) -> int:
+        """3.0 -> 300 : le ratio en entier, pour comparer sans float."""
+        return round(self.ratio_min * 100)

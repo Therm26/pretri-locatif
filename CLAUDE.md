@@ -102,5 +102,18 @@ tests/
   - D21 : Incomplet, Non conforme (1,89), À vérifier → groupe (c). D22 : Complet, Conforme (4,61), À vérifier → groupe (b).
   - Tests : 86.
 
+- **Étape 5a** (14/11/2026) : `src/db.py` (SQLite) et `scripts/importer_dossiers.py`. Pas d'interface.
+  - Règle ajoutée dans `regles.py` : moins de 2 nets lisibles (1 si le bien n'exige qu'un bulletin) → Non évaluable, motif « 1 net(s) lisible(s) sur 3 bulletin(s), il en faut au moins 2 ».
+  - Ratio comparé en entiers : somme des nets (centimes) × 100 ≥ ratio en centièmes × loyer (centimes) × nombre de nets. Plus de tolérance en float. `Bien` refuse un loyer ou un ratio à plus de 2 décimales ; propriétés `loyer_centimes`, `ratio_centiemes`.
+  - Tables : `bien` (loyer en centimes), `dossier` (référence sans nom, `date_depot`, `a_supprimer_le` = dépôt + 3 mois, `visale`), `piece` (JSON de `PieceExtraite` = données personnelles), `resultat` (3 statuts, motifs, groupe, revenus en centimes), `journal`.
+  - `connecter()` active `PRAGMA foreign_keys = ON` à chaque connexion. Dates en ISO 8601 à la seconde (`2026-11-02T09:00:00`), vérifiées par un CHECK de la base.
+  - `purger()` supprime les dossiers dont `a_supprimer_le` est dépassé ; pièces et résultat partent en cascade ; le journal garde ses lignes (`dossier_id` à NULL, `reference` conservée) et note la purge.
+  - Journal : seulement références, statuts, critères du bien ; `journaliser()` refuse toute clé hors `CLES_JOURNAL` (pas de montant lu, d'employeur, de motif ni de nom de fichier). Action `evaluation` : loyer, ratio_min, garant accepté/fourni, Visale acceptée/fournie, les 3 statuts, via et groupe.
+  - Import : bien « T2 fictif » (800 €, ratio 3), D01 à D22 depuis `data/fake/extraction/` (sans API), dépôts du 02/11/2026 9 h au 04/11/2026 18 h, graine 42, ordre mélangé. Relancer n'ajoute rien. Base : `data/pretri.db`.
+  - Résultat : 13 en (a), D05, D17, D22 en (b), D21 en (c), D01, D09, D13, D19, D20 en (d).
+  - Lancer : `.\.venv\Scripts\python.exe -m scripts.importer_dossiers`.
+  - Tests : `tests/test_db.py`. Total : 120.
+  - Décision du gestionnaire : prévue à l'étape 6.
+
 ### Prochaine étape
-- **Étape 5** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
+- **Étape 5b** : `app.py` (Streamlit) : créer un bien, importer un dossier (zip ou PDF) avec sa date de dépôt, cocher Visale, joindre un garant, voir la liste triée par groupe puis date de dépôt, ouvrir le détail. Nécessite `db.py` (SQLite) pour garder biens, dossiers et résultats.
