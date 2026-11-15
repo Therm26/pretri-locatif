@@ -6,6 +6,9 @@ les critères financiers fixés pour le bien. La décision reste au gestionnaire
 
 Toutes les données du dépôt et des tests sont fictives.
 
+Le projet est développé avec Claude Code. Le fichier `CLAUDE.md` contient les règles
+données à l'assistant et le journal d'avancement, étape par étape.
+
 ![Liste des dossiers d'un bien, triés par groupe puis par date de dépôt](docs/captures/liste.png)
 
 ## Le problème

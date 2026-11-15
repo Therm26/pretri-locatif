@@ -1,5 +1,7 @@
 # Projet : pré-tri des dossiers locatifs (prototype)
 
+Ce fichier donne à Claude Code (l'assistant de programmation avec lequel le projet est développé) les règles du projet, et tient le journal d'avancement d'une séance à l'autre. Pour une présentation du projet, voir `README.md`.
+
 ## Objectif
 Aider un gestionnaire locatif à traiter 100+ dossiers pour un même bien. L'outil vérifie que chaque dossier est complet, extrait les chiffres clés des justificatifs, signale les incohérences qui ressemblent à une fraude et applique les critères financiers du bien. La décision finale reste au gestionnaire.
 
@@ -18,23 +20,30 @@ Aider un gestionnaire locatif à traiter 100+ dossiers pour un même bien. L'out
 - SQLite pour stocker biens, dossiers, résultats et journal
 - pytest pour les tests
 
-## Structure cible
+## Structure
 ```
-app.py                  # interface Streamlit
+app.py                    # interface Streamlit (affichage seulement)
 src/
-  models.py             # dataclasses : Bien, Dossier, Piece, Resultat
-  extraction.py         # appel Claude : PDF -> JSON structuré
-  controles.py          # contrôles de cohérence (anti-fraude)
-  regles.py             # critères du bien appliqués au dossier
-  journal.py            # écriture du log
-  db.py                 # accès SQLite
+  models.py               # Bien : critères du bien, pièces exigibles du décret
+  extraction.py           # appel Claude : PDF ou image -> JSON validé (PieceExtraite)
+  controles.py            # contrôles de cohérence (SIRET, net/brut, avis, dates)
+  regles.py               # trois statuts, motifs, groupes de tri
+  db.py                   # SQLite : biens, dossiers, décisions, journal, purge
+  depot.py                # zip ou PDF reçus -> extraction -> base
+  export.py               # export CSV de la sélection
 scripts/
-  generer_dossiers.py   # crée de faux dossiers PDF pour les tests
-data/fake/              # dossiers fictifs générés
+  generer_dossiers.py     # crée les dossiers fictifs (PDF et zip)
+  evaluer_extraction.py   # passe les dossiers fictifs dans l'API, compare à la vérité
+  taux_par_champ.py       # taux de lecture par champ, sans API
+  importer_dossiers.py    # charge les dossiers fictifs déjà lus dans la base
+data/fake/                # dossiers fictifs générés (non versionnés)
 tests/
+docs/captures/            # captures d'écran du README
 ```
 
-## Étapes (une à la fois, tester avant de passer à la suivante)
+## Plan initial (une étape à la fois, tester avant de passer à la suivante)
+Les étapes 4 et 5 ont été révisées en cours de route : trois statuts indépendants au lieu d'un seul, tri par groupe puis date de dépôt au lieu du ratio. Voir « Avancement ».
+
 1. `generer_dossiers.py` : 20 faux dossiers (bulletins de salaire, avis d'imposition, contrat de travail, pièce d'identité factice). Dont 4 volontairement faux : net incohérent avec le brut, SIRET invalide, revenus du bulletin différents de l'avis d'imposition, dates impossibles.
 2. `extraction.py` : envoyer un PDF à Claude, récupérer un JSON validé (employeur, SIRET, salaire brut, net, période, type de contrat, revenu fiscal de référence).
 3. `controles.py` : contrôles déterministes en Python (clé de Luhn du SIRET, ratio net/brut entre 0,70 et 0,85, cohérence bulletin vs avis, dates).
@@ -140,7 +149,7 @@ tests/
   - Tests : `tests/test_decision.py` (16, dont migration et export). Total : 151.
   - Pas de retour à « sans décision » : on peut seulement passer de retenu à non retenu et inversement.
   - Sous le bouton d'export : « Ce fichier n’est pas supprimé automatiquement. »
-- **Import réel par l'API depuis l'interface** (14/11/2026) : sur une base d'essai (scratchpad), `D05.zip` importé dans « T2 fictif » sous la référence D23. 6 lectures en 28 s, avec la barre de progression ; valeurs lues identiques champ par champ à `data/fake/extraction/D05.json` ; D23 en groupe (b) comme D05 (Complet, Conforme 3,51, À vérifier : net/brut 0,95 sur les 3 bulletins). Journal : `extraction`, `import`, `evaluation`.
+- **Import réel par l'API depuis l'interface** (14/11/2026) : sur une base d'essai temporaire, `D05.zip` importé dans « T2 fictif » sous la référence D23. 6 lectures en 28 s, avec la barre de progression ; valeurs lues identiques champ par champ à `data/fake/extraction/D05.json` ; D23 en groupe (b) comme D05 (Complet, Conforme 3,51, À vérifier : net/brut 0,95 sur les 3 bulletins). Journal : `extraction`, `import`, `evaluation`.
 
 ### Prochaine étape
 - Les 6 étapes du plan sont faites. Pistes : reconnaître le certificat Visale automatiquement, critère d'ancienneté et type de contrat (autorisé, pas encore appliqué), `journal.py` séparé comme dans la structure cible.
