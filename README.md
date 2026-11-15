@@ -204,3 +204,7 @@ Les tests n'appellent pas l'API.
   pour être lus. Un usage sur de vrais dossiers demanderait de vérifier ce traitement au
   regard du RGPD.
 - **Prototype mono-utilisateur**, sans authentification.
+
+## Licence
+
+MIT : voir le fichier [LICENSE](LICENSE).
